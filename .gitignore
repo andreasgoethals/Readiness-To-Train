@@ -1,3 +1,14 @@
+# Data and Results: Ignore contents but keep the directory structure
+data/raw/*
+!data/raw/.gitkeep
+
+data/processed/*
+!data/processed/.gitkeep
+
+results/*
+!results/.gitkeep
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
