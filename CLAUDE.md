@@ -1,9 +1,9 @@
 # Readiness to Train - Project Documentation
 
-**Generated:** 2026-02-10
-**Project:** Causal Modeling of Player Readiness to Train
+**Generated:** 2026-02-25
+**Project:** Causal Modelling of Player Readiness to Train
 **Partnership:** KU Leuven & OH Leuven
-**Purpose:** Prescriptive analytics for optimal training intensity using Causal Machine Learning
+**Purpose:** Prescriptive analytics for optimal training intensity using Causal Machine Learning (Dynamic Treatment Regimes)
 
 ---
 
@@ -14,36 +14,56 @@
 3. [Project Structure](#project-structure)
 4. [Data Pipeline](#data-pipeline)
 5. [Machine Learning Methods](#machine-learning-methods)
-6. [Usage Guide](#usage-guide)
-7. [API Reference](#api-reference)
-8. [Best Practices](#best-practices)
-9. [Troubleshooting](#troubleshooting)
+6. [Methodological Framework](#methodological-framework)
+7. [Usage Guide](#usage-guide)
+8. [API Reference](#api-reference)
+9. [Best Practices](#best-practices)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Core Objective
 
-This project develops a **prescriptive analytics system** that estimates the "Readiness to Train" for individual football players. Rather than simple prediction, the project utilizes **Causal Machine Learning** to recommend the optimal **treatment** (training intensity) for each player. The ultimate aim is to maximize performance on match days while minimizing injury risk through a personalized **"traffic light" decision-support system** (Green / Orange / Red).
+This project develops a **prescriptive analytics system** that estimates individual player **Readiness to Train** in professional football. Using **Causal Machine Learning** within a **Dynamic Treatment Regime (DTR)** framework, the system recommends an optimal daily training intensity for each player, delivered as a **continuous score between 0 and 1**. A score of 0 indicates the player should rest entirely; a score of 1 indicates the player can train at maximal intensity. This score simultaneously serves two roles: it is the recommended treatment (the prescribed training intensity from the causal model) and an observable variable for coaching and medical staff.
+
+> **Important:** The objective is **not** injury minimisation. A policy that minimises injury risk trivially prescribes zero load. The true objective is **performance optimisation under biological constraints**, where some non-zero injury incidence may be optimal because competitive performance requires physiological stress. Injuries are part of the performance-exposure frontier, not a quantity to be driven to zero.
+
+The system is fully **individualised**: each player receives a personalised score derived from their own physiological profile, training history, and evolving state. Because training sessions occur sequentially before each match and each player's history differs, the problem is inherently a **Dynamic Treatment Regime with variable-length decision horizons**.
+
+### Why This Is a Causal Problem
+
+Standard predictive modelling asks *"given the data, what will happen?"*. This project asks *"given a player's full history up to today, what training intensity today best contributes to future match-day performance?"* This requires causal reasoning for three reasons:
+
+1. **Time-Varying Confounding Affected by Prior Treatment**: Covariates at time t (fatigue, readiness, ACWR) are simultaneously consequences of treatment at t-1 and causes of treatment at t. Classical regression cannot handle this correctly — this is precisely the setting for which G-methods were developed.
+2. **Treatment-Confounder Feedback**: Coaching decisions are observational. Hard sessions are prescribed when players appear fresh; recovery is prescribed when fatigue is high. The observed training-performance association conflates physiological response with coach selection behaviour.
+3. **Sequential Decision-Making**: The treatment is a repeated, time-varying intervention. The question is not just "what training today?" but "what sequence of training intensities over the cycle maximises match-day performance?" — a DTR problem.
 
 ### Key Research Questions
 
-1. How can we accurately estimate the probability of readiness in a "Small N, Large T" environment (27 players, 156 days)?
-2. How do we effectively handle **selection bias** (covariate shift) in observational football data — coaches only give hard training to fresh players?
-3. Can a Causal ML model outperform traditional sport science rules by identifying non-linear, individualized responses to training stress?
+1. How can we accurately estimate the effect of training intensity sequences in a "Small N, Large T" environment (27 players, 156 days)?
+2. How do we handle **time-varying confounding affected by prior treatment** in observational football data?
+3. Can a causal DTR model identify the optimal individualised training sequence that maximises match-day performance?
 
-### Causal Framework
+### Causal Framework Variables
 
-The data loader supports flexible variable selection for different experimental setups:
+| Symbol | Role | Variables |
+|--------|------|-----------|
+| **Lₜ** (Covariates) | Player state at time t | Wellness z-scores, ACWR, composite scores, Days Since Game, Days Until Match, medical availability |
+| **Aₜ** (Treatment) | Daily training intensity | Continuous score ∈ [0,1], derived from GPS metrics (total distance, high-speed distance, decelerations, sprints) normalised against individual match benchmarks |
+| **Y** (Outcome) | Match-day performance | Physical intensity per minute played (continuous, already in dataset) |
 
-- **Covariates (X)**: Selected via `predictory_columns` — typically wellness z-scores, workload history, status, medical availability, Days Since Game, Days Until Match
-- **Treatment (T)**: Selected via `treatment_columns` — the specific treatment variable(s) depend on the experiment. Possible candidates include Activity Type Today (session type), GPS benchmark % variables (training intensity), or combinations thereof.
-- **Outcome (Y)**: Selected via `target_variable` — typically Status Decrease (binary), but can be any column
+The data loader supports flexible variable selection:
+- **Covariates (X)**: Selected via `predictory_columns`
+- **Treatment (T)**: Selected via `treatment_columns` — the specific treatment variable(s) depend on the experiment
+- **Outcome (Y)**: Selected via `target_variable` — typically the match-day performance variable or Status Decrease (for binary ML experiments)
 
 ### Target Variables
 
-The primary prediction target is **Status Decrease**, a binary indicator:
-- `1`: Player's medical status worsened (Available→Attention, Available→Injured, or Attention→Injured)
-- `0`: Status stable or improved
+For **standard ML experiments** (prediction):
+- **Status Decrease** (binary): Player's medical status worsened (Available→Attention, Available→Injured, or Attention→Injured). `1` = worsened, `0` = stable/improved.
+
+For **causal DTR experiments** (optimisation):
+- **Match-day physical intensity per minute played** (continuous): The true causal outcome. The DTR objective is to find the sequence of training intensities that maximises the expected value of this outcome.
 
 ---
 
@@ -63,31 +83,30 @@ TIMELINE FOR A SINGLE ROW (date t):
     ├─────────────────┤    ├──────────────────────┤    ├──────────────────┤
     │ Act Type Yest.   │    │ Wellness z-scores     │    │ Activity Type     │
     │ GPS % Yesterday  │    │ Status                │    │   Today           │
-    │ ACWR Yesterday   │    │ Status Decrease       │    │                   │
-    │ Comment Yest.    │    │ Days Since Game       │    │ (post-assessment) │
+    │ ACWR Yesterday   │    │ Status Decrease       │    │ Training Intensity│
+    │ Comment Yest.    │    │ Days Since Game       │    │   Score [0,1]     │
     │ RPE Yesterday    │    │ Days Until Match      │    │                   │
-    │ Med Availability │    │ Physical/Mental State │    │                   │
+    │ Med Availability │    │ Physical/Mental State │    │ (post-assessment) │
     │ Club Attendance  │    │ Overall Wellbeing     │    │                   │
     └─────────────────┘    └──────────────────────┘    └──────────────────┘
          FULLY KNOWN            MORNING DATA              POST-ASSESSMENT
-         at day start           measured before            session type
-                                activity decisions         decided AFTER
-                                                           assessment (t+1)
+         at day start           measured before            session decided AFTER
+                                activity decisions         assessment (t+1 data)
 ```
 
 ### Critical Rules
 
-1. **Activity Type Today is a post-assessment variable** — it is determined AFTER the morning assessment and derived from the next row's Activity Type Yesterday (t+1 data). It should not be used as a predictor in standard ML since it is not available at prediction time. It can be used as a treatment variable via `treatment_columns` for causal analysis.
+1. **Activity Type Today / Training Intensity is a post-assessment variable** — it is determined AFTER the morning assessment and derived from the next row's Activity Type Yesterday (t+1 data). It should not be used as a predictor in standard ML since it is not available at prediction time. It must be used via `treatment_columns` for causal analysis.
 2. **Days Since Game is NEVER 0** — it counts days since the last *completed* OHL first-team game (Activity Type = exactly "Game"). On match day, the game hasn't happened yet when the morning assessment occurs, so it counts since the *previous* match. Minimum value is 1. "Youth training or game" and "National team training/game" are NOT counted as matches.
-3. **Days Until Match CAN be 0** — on match day itself, Days Until Match = 0. Only OHL first-team matches (Activity Type = exactly "Game") are counted; youth and national team games are excluded.
+3. **Days Until Match CAN be 0** — on match day itself, Days Until Match = 0. Only OHL first-team matches are counted. Internally, `Days Until Match` is computed using `Activity Type Today` (a post-assessment variable), but this is safe because preprocessing uses the full dataset after the fact; at inference time, Days Until Match is computed separately from the match schedule (which is known in advance).
 4. **Yesterday's data describes t-1** — all "Yesterday" columns contain data from the day before the row's date.
 5. **Wellness z-scores are individualized** — each player's z-scores are relative to their own 28-day rolling baseline, NOT the team average.
 
 ### Between-Row Temporal Structure
 
-The data is **longitudinal time-series**: each player has a sequence of daily observations. The typical weekly structure is ~6 training days followed by a match day.
+The data is **longitudinal time-series**: each player has a sequence of daily observations. The typical weekly structure is ~5-6 training days followed by a match day. This creates the **match cycle** structure central to the DTR formulation.
 
-For **lagged features**, the data loader creates player-grouped shifted values (e.g., `Fatigue (z)_t-1`, `Fatigue (z)_t-2`) to capture temporal patterns. These shifts are done within each player group to prevent cross-player data leakage.
+For **lagged features**, the data loader creates player-grouped shifted values (e.g., `Fatigue (z)_t-1`) to capture temporal patterns. Shifts are done within each player group to prevent cross-player data leakage.
 
 ---
 
@@ -96,12 +115,13 @@ For **lagged features**, the data loader creates player-grouped shifted values (
 ```
 Readiness-To-Train/
 │
-├── assets/
-│   └── Project Overview.pdf          # Research overview document
+├── Project Overview.pdf              # Research overview document (root)
 │
 ├── data/
 │   ├── raw/                          # Original data files
-│   │   └── Readiness_Data.csv        # Raw player monitoring data (4,239 rows × 24 cols)
+│   │   ├── Readiness_Data.csv        # Raw player monitoring data (4,239 rows × 24 cols)
+│   │   ├── Raw Data Dictionary.pdf   # Raw data documentation
+│   │   └── NDA.pdf                   # Non-disclosure agreement
 │   └── processed/                    # Preprocessed data
 │       ├── Readiness_Data.csv        # Cleaned & feature-engineered data (4,239 rows × 36 cols)
 │       └── Processed Data Dictionary.pdf  # Auto-generated variable documentation
@@ -119,9 +139,10 @@ Readiness-To-Train/
 │       ├── LogReg.py                 # Logistic Regression model
 │       └── XGBoost.py                # XGBoost model
 │
-├── results/                          # Model outputs
+├── results/                          # Model outputs and saved figures
 │
-└── CLAUDE.md                         # This documentation file
+├── CLAUDE.md                         # This documentation file
+└── requirements.txt                  # Python dependencies
 ```
 
 ---
@@ -137,6 +158,17 @@ Readiness-To-Train/
 | Variables (processed) | 36 |
 | Temporal Span | 156 days (Jun-Nov 2025) |
 | Unique Players | 27 |
+| Granularity | Daily (one row per player per day) |
+
+### Feature Categories
+
+| Category | Features | Encoding |
+|----------|----------|----------|
+| External Load (GPS) | Total Distance, High-Speed Distance (>19.8 km/h), Decelerations (>3 m/s²), Sprints | ACWR (7:42 EMA), % of personal match benchmarks |
+| Subjective Wellbeing | Fatigue, Soreness, Sleep Quality, Stress, Mood | Individualised 28-day rolling-window Z-scores |
+| Composite Scores | Physical State, Mental State, Overall Wellbeing | Aggregated from subjective sub-scales |
+| Contextual / Medical | Medical availability %, Club attendance %, Activity reason, Medical status | Categorical (Available / Attention / Injured / Sick / Absent) |
+| Temporal Context | Days Since Game, Days Until Match | Integer; Days Since Game ≥ 1, Days Until Match ≥ 0 |
 
 ### 1. Data Preprocessing (`data_preprocessing.py`)
 
@@ -154,7 +186,7 @@ The preprocessing pipeline transforms raw data into analysis-ready format.
 6. Activity Type Today (session type on day t, derived from next row's Activity Type Yesterday)
 7. Days Since Game (days since last *completed* match, minimum 1, never 0)
 8. Days Until Match (days until next scheduled match, 0 on match day)
-9. Match Day (team-level: 1 if any player has an OHL first-team game on that date; excludes youth/national team games) and Selected (player-level: 1/0/NaN)
+9. Match Day (team-level: 1 if any player has an OHL first-team game on that date) and Selected (player-level: 1/0/NaN)
 10. Status Decrease detection (Available→Attention/Injured, Attention→Injured)
 11. ACWR danger zone flagging (any ACWR > 1.5)
 12. Column reordering into temporal groups
@@ -167,8 +199,8 @@ The preprocessing pipeline transforms raw data into analysis-ready format.
 | Identifiers | Date, Playerkey, Player ID, Position | Always known |
 | Historical | Medical Availability Last 14 Days, Club Attendance Last 14 Days | Before day t |
 | Yesterday (t-1) | ACWR (×4), Any ACWR Danger, Activity Type Yesterday, Comment Yesterday, Comment Category Yesterday, GPS % (×5), Perceived Exertion Yesterday | Before day t |
-| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match | Covariates (X) |
-| Post-assessment (t) | Activity Type Today, Match Day, Selected | Session type assigned after morning assessment (t+1 data); Match Day is team-level (1 if any player has OHL first-team game — excludes youth/national team); Selected is player-level (1/0/NaN) |
+| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match | Covariates Lₜ |
+| Post-assessment (t) | Activity Type Today, Match Day, Selected | Treatment Aₜ — assigned after morning assessment (t+1 data) |
 
 **Usage:**
 ```python
@@ -309,128 +341,127 @@ model = XGBoostModel(
 
 ### Causal DAG Builder (`DAG_Creator.py`)
 
-**Best For:** Defining the causal graph structure for longitudinal causal inference methods
+**Best For:** Defining the causal graph structure for longitudinal causal inference and DTR methods
 
-The `DAGCreator` class dynamically builds directed acyclic graphs (DAGs) representing the causal structure of multi-day training cycles. It is **variable-name agnostic** — all variable names are provided by the caller, nothing is hardcoded.
+The `DAGCreator` class is **player-specific**: instantiated once per player, it auto-loads that player's data, auto-detects match cycle boundaries, and builds the full longitudinal DAG for all cycles in the data. It is **variable-name agnostic** — all variable names are provided by the caller, nothing is hardcoded.
 
 **Key concepts:**
-- **State variables** (`state_vars`): A unified set of player state variables used as baseline (t0) and daily covariates (t1..tN). Baseline, covariates, and post-match state all represent the same concept — the player's condition measured through summarizing variables.
-- **Multi-cycle support**: Multiple consecutive match cycles with variable lengths, connected by outcome-to-baseline feedback edges. Each player may have different cycle lengths depending on their match schedule.
-- **Outcome feedback**: Match-day performance (outcome) at the end of each cycle causally affects the player's state entering the next cycle.
+- **State variables** (`state_vars`): Player state Lₜ — used as baseline (t0) and daily covariates (t1..tN). Represent the player's condition: wellness z-scores, ACWR, composite scores, temporal context.
+- **Treatment** (`treatment_var`): Daily training intensity Aₜ — a continuous score [0,1] derived from GPS metrics normalised against individual match benchmarks.
+- **Outcome** (`outcome_var`): Match-day performance Y — physical intensity per minute played (continuous, to be maximised).
+- **Player-specific cycles**: Cycle boundaries are detected from the player's own `Activity Type Today == 'Game'` rows. Days where the team plays but the player is NOT selected simply extend the current cycle — they are not treated as a match boundary for that player.
+- **`cross_var_carryover`**: If `True`, every state variable at time t causally influences all state variables at t+1 (N² edges). If `False` (default), each variable only influences itself at t+1 (N edges). Applied consistently to both baseline→day1 and day→day+1 transitions.
 
-**Single cycle:**
+**Constructor:**
 ```python
 from src.methods.DAG_Creator import DAGCreator
 
-creator = DAGCreator()
-dag = creator.build_dag(
-    cycle_lengths=5,                   # Single 5-day cycle
-    state_vars=[                       # Player state (baseline + covariates)
-        'Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
-    ],
-    daily_treatment_var='Activity Type Today',  # Treatment per day
-    outcome_var='Status Decrease',     # Match-day performance
+creator = DAGCreator(
+    player_id=1,
+    state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
+                'Days Since Game', 'Days Until Match'],
+    treatment_var='Training Intensity Score',
+    outcome_var='Match Performance',
+    cross_var_carryover=False,   # self-only carryover (default)
+    data_path=None,              # uses default processed data path
 )
-# Returns: networkx.DiGraph with time-indexed nodes and causal edges
-```
-
-**Multi-cycle with variable lengths:**
-```python
-dag = creator.build_dag(
-    cycle_lengths=[5, 7, 5],          # 3 cycles of different lengths
-    state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-    daily_treatment_var='Activity Type Today',
-    outcome_var='Status Decrease',
-)
-# Outcome of cycle 1 feeds back into baseline of cycle 2, etc.
-feedback = creator.get_feedback_edges()
-# [('Status Decrease_c1', 'Fatigue (z)_c2_t0'), ...]
+# DAG is built automatically — creator.dag is a networkx.DiGraph
 ```
 
 **Node naming:** `{variable}_c{cycle}_t{day}` for state/treatment nodes, `{outcome}_c{cycle}` for outcome nodes.
 
 **Causal edges encoded:**
-| Edge type | Example | Meaning |
-|-----------|---------|---------|
-| `baseline_to_covariate` | Fatigue (z)_c1_t0 → Readiness (z)_c1_t1 | Initial conditions |
-| `confounding` | Fatigue (z)_c1_t1 → Activity Type Today_c1_t1 | Selection bias |
-| `treatment_effect` | Activity Type Today_c1_t1 → Fatigue (z)_c1_t2 | Causal effect |
-| `state_carryover` | Fatigue (z)_c1_t1 → Fatigue (z)_c1_t2 | State persistence |
-| `treatment_to_outcome` | Activity Type Today_c1_t5 → Status Decrease_c1 | Final effect |
-| `covariate_to_outcome` | Fatigue (z)_c1_t5 → Status Decrease_c1 | Final state effect |
-| `outcome_to_baseline` | Status Decrease_c1 → Fatigue (z)_c2_t0 | Inter-cycle feedback |
 
-**Query methods:** `get_nodes_by_role()`, `get_nodes_at_time()`, `get_nodes_in_cycle()`, `get_nodes_at_cycle_day()`, `get_cycle_outcome()`, `get_feedback_edges()`, `get_parents()`, `get_children()`, `get_edges_by_relation()`, `summary()`
+| Edge type | Meaning |
+| --------- | ------- |
+| `baseline_to_covariate` | L₀ → L₁ (initial conditions propagate into the cycle) |
+| `confounding` | Lₜ → Aₜ (coaches prescribe based on player state — selection bias) |
+| `treatment_effect` | Aₜ → Lₜ₊₁ (training changes fatigue, soreness, adaptation) |
+| `state_carryover` | Lₜ → Lₜ₊₁ (state persistence; scope controlled by `cross_var_carryover`) |
+| `treatment_to_outcome` | Aₜ → Y (final session effect on match performance) |
+| `covariate_to_outcome` | Lₜ → Y (final state effect on match performance) |
+| `outcome_to_baseline` | Y_k → L₀_{k+1} (match toll feeds back into next cycle's baseline) |
 
-**Visualization methods:**
+**Query methods:** `get_nodes_by_role()`, `get_nodes_at_time()`, `get_nodes_in_cycle()`, `get_nodes_at_cycle_day()`, `get_cycle_outcome()`, `get_feedback_edges()`, `get_parents()`, `get_children()`, `get_edges_by_relation()`, `get_time_varying_confounders()`, `to_adjacency_matrix()`, `summary()`
 
-The DAGCreator supports three visualization modes for producing publication-ready figures:
+**Visualization:**
 
-| Mode | Method | Description |
-|------|--------|-------------|
-| `'schematic'` | `visualize(mode='schematic')` | Collapsed view: all state variables summarized into single "Player State" nodes. Clean, publication-ready. |
-| `'detailed'` | `visualize(mode='detailed')` | Full expanded view: every individual variable node and all edges visible. |
-| `'single_cycle'` | `visualize(mode='single_cycle', cycle=k)` | Detailed view of one specific cycle. |
-
-Convenience shorthand: `visualize_cycle(cycle=k)` is equivalent to `visualize(mode='schematic', cycle=k)`.
-
-**Visual encoding:**
-- **Green ellipse**: Baseline state (t₀)
-- **Blue ellipse**: Daily player state (covariates)
-- **Orange rectangle**: Treatment (training intensity)
-- **Red diamond**: Match outcome
-- **Purple arrow**: Inter-cycle feedback (outcome → next baseline)
-- **Dashed orange arrow**: Confounding (state → treatment, selection bias)
-- **Red arrow**: Treatment effect
-- **Blue arrow**: State carry-over
-
-**Schematic visualization (single cycle):**
-```python
-creator = DAGCreator()
-creator.build_dag(
-    cycle_lengths=5,
-    state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-    daily_treatment_var='Activity Type Today',
-    outcome_var='Status Decrease',
-)
-creator.visualize(mode='schematic', save_path='results/dag_schematic.png')
-```
-
-**Schematic visualization (multi-cycle with feedback):**
-```python
-creator.build_dag(
-    cycle_lengths=[5, 7, 5],
-    state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-    daily_treatment_var='Activity Type Today',
-    outcome_var='Status Decrease',
-)
-creator.visualize(mode='schematic', save_path='results/dag_multi_cycle.png')
-```
-
-**Visualize just one cycle from a multi-cycle DAG:**
-```python
-creator.visualize_cycle(cycle=2, save_path='results/dag_cycle_2.png')
-# or equivalently:
-creator.visualize(mode='schematic', cycle=2)
-```
-
-**Detailed view (all individual variable nodes):**
-```python
-creator.visualize(mode='detailed', save_path='results/dag_detailed.png')
-```
-
-**Full parameter list for `visualize()`:**
 ```python
 creator.visualize(
-    mode='schematic',        # 'schematic', 'detailed', or 'single_cycle'
-    cycle=None,              # Which cycle to show (None = all)
-    figsize=None,            # (width, height) in inches, auto-computed if None
-    save_path=None,          # Save to file (.png, .pdf, .svg)
-    dpi=150,                 # Resolution for saved images
-    title=None,              # Custom title (auto-generated if None)
-    show=True,               # Whether to display interactively
+    cycles=None,          # None=all cycles, int=one cycle index, List[int]=subset
+    completeness='schematic',  # 'schematic' or 'detailed'
+    save_path='results/dag_schematic.png',
+    dpi=150,
+    show=True
 )
 ```
+
+**`completeness` options:**
+
+- **`'schematic'`**: Collapsed view — all state variables summarized into a single "Player State" / "Baseline State" node per time step. Clean, publication-ready.
+- **`'detailed'`**: Full expanded view — every individual variable shown as a separate node, enclosed by a labeled "Player State" / "Baseline State" bounding box per time step.
+
+**Visual encoding:**
+- **Teal ellipse**: Baseline state L₀
+- **Blue ellipse**: Daily player state Lₜ (covariates)
+- **Amber rectangle**: Treatment Aₜ (training intensity [0,1])
+- **Crimson diamond**: Match outcome Y (performance)
+- **Purple arrow**: Inter-cycle feedback (outcome → next baseline)
+- **Dashed amber arrow**: Confounding (state → treatment, selection bias)
+- **Red arrow**: Treatment effect (Aₜ → Lₜ₊₁)
+- **Blue arrow**: State carry-over (Lₜ → Lₜ₊₁)
+
+**Examples:**
+```python
+# Schematic view of all cycles
+creator.visualize(cycles=None, completeness='schematic', save_path='results/dag_all.png')
+
+# Detailed view of cycles 0 and 1 only
+creator.visualize(cycles=[0, 1], completeness='detailed', save_path='results/dag_detail.png')
+
+# Query the DAG object
+adj = creator.to_adjacency_matrix()
+tvc = creator.get_time_varying_confounders()
+print(creator.summary())
+```
+
+---
+
+## Methodological Framework
+
+### Dynamic Treatment Regimes (DTR)
+
+A DTR is a sequence of decision rules d = (d₁, …, dK), one per decision point (training day), mapping from a player's evolving covariate and treatment history to an optimal treatment action. The goal is the **optimal DTR**: the regime that maximises expected match-day performance.
+
+### G-Methods for Time-Varying Confounding
+
+The causal estimation strategy uses G-methods (Robins, 1986), designed for settings with time-varying confounders affected by prior treatment:
+
+| Method | Description | Suitability |
+|--------|-------------|-------------|
+| **G-Computation** | Models joint distribution of all post-treatment variables; simulates counterfactuals under hypothetical regimes | Good (parametric) |
+| **MSM / IPTW** | Marginal Structural Models with Inverse Probability of Treatment Weighting; creates pseudo-population independent of confounders | Good (parametric) |
+| **G-Estimation / SNMM** | Structural Nested Mean Models targeting the blip function; doubly robust | Good (semi-parametric) |
+
+### DTR Estimation Methods
+
+| Method | Sequential Opt. | Continuous Tx | Small N |
+|--------|----------------|---------------|---------|
+| **Q-Learning** | Yes (backward induction) | Yes | Moderate |
+| **dWOLS** | Yes (native) | Yes (extended) | Good |
+| Off-Policy RL | Yes (native) | Yes | Limited (data-hungry) |
+
+> **Note:** Causal meta-learners (S-Learner, T-Learner, X-Learner, DR-Learner) are **not appropriate** for this problem. They estimate single-stage CATEs and do not handle time-varying confounding affected by prior treatment, nor do they optimise over sequential decisions.
+
+### Causal Identification Assumptions
+
+1. **Sequential exchangeability**: At each time point, treatment is independent of potential outcomes conditional on observed history. Plausible given rich covariates (GPS, wellness, medical status), but unmeasured factors (tactical, personal) may threaten this.
+2. **Positivity (overlap)**: For every covariate history, there must be a positive probability of receiving any treatment level. Requires sufficient variation in prescribed intensities across player states.
+3. **Consistency**: The observed outcome under the treatment actually received equals the potential outcome under that treatment.
+
+### Statistical Regime: Small N, Large T
+
+Only 27 players but moderately long time series (~156 days each). The signal is likely dominated by **within-player dynamics**. Models must be parsimonious or leverage partial pooling to avoid overfitting. Methods should balance individual-level tailoring with limited sample size.
 
 ---
 
@@ -442,7 +473,7 @@ creator.visualize(
 from src.methods.XGBoost import XGBoostModel
 
 # IMPORTANT: Only use variables available at prediction time as predictors.
-# Activity Type Today is determined AFTER the morning assessment — do not include as a predictor.
+# Activity Type Today / Training Intensity is determined AFTER the morning assessment.
 predictors = [
     'Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
     'Physical State', 'Sleep Quality (z)', 'Stress (z)',
@@ -536,10 +567,10 @@ create_dataset(
 **Returns (additional keys when treatment_columns is provided):**
 ```python
 {
-    'T_train': pd.DataFrame,              # Treatment variables for training
-    'T_val': pd.DataFrame,                # Treatment variables for validation
-    'T_test': pd.DataFrame,               # Treatment variables for test
-    'treatment_feature_names': List[str],  # After encoding
+    'T_train': pd.DataFrame,
+    'T_val': pd.DataFrame,
+    'T_test': pd.DataFrame,
+    'treatment_feature_names': List[str],
     'treatment_categorical': List[str],
     'treatment_numerical': List[str],
     'treatment_encoding_info': Dict,
@@ -560,13 +591,14 @@ model.train() -> Dict  # Returns predictions, metrics, model weights
 
 ### 1. Feature Selection — Temporal Safety
 
-**Not available at prediction time (should not be used as predictors):**
+**Not available at prediction time (must not be used as predictors):**
 - `Activity Type Today` (determined after morning assessment — t+1 data)
-- Any variable derived from today's training session
+- Any GPS metric from today's training session
+- Training Intensity Score (post-assessment)
 
-**Available at prediction time (safe as predictors):**
+**Available at prediction time (safe as predictors / covariates Lₜ):**
 - All wellness z-scores (morning assessment)
-- All "Yesterday" columns (fully observed)
+- All "Yesterday" columns (fully observed at day start)
 - Days Since Game, Days Until Match (known in the morning)
 - Medical Availability, Club Attendance (historical)
 - Position (static)
@@ -585,8 +617,6 @@ Status decreases are rare (~3-5% of observations). Both models handle this:
 
 ### 4. Treatment Variable Configuration
 
-When using causal ML methods, use `treatment_columns` to explicitly separate treatment from covariates. The specific treatment variable(s) depend on the experiment — the data loader does not prescribe what should be the treatment. Example configurations:
-
 | Scenario | treatment_columns | treatment_horizon | target_horizon | Research question |
 |----------|------------------|-------------------|----------------|-------------------|
 | Standard ML | *not set* | - | 0 | Yesterday's load → today's status |
@@ -595,9 +625,9 @@ When using causal ML methods, use `treatment_columns` to explicitly separate tre
 | Full prescription | `['Activity Type Today', GPS % cols]` | `{...: 0, ...: 1}` | 1 | Effect of full prescription on tomorrow |
 | Yesterday's intensity | `[GPS % Yesterday cols]` | 0 | 0 | Effect of yesterday's intensity on today |
 
-### 5. Covariate Shift Awareness
+### 5. Covariate Shift and Confounding
 
-Coaches assign training based on player state (healthy players get harder training). This creates **selection bias** that makes observational data unreliable for simple prediction. The causal ML approach (SurvITE, etc.) addresses this by balancing representations across treatment groups.
+Coaches assign training based on player state (healthy players get harder training). This creates **time-varying confounding affected by prior treatment** — the core methodological challenge. Standard regression and single-stage causal estimators (meta-learners) cannot handle this correctly. The appropriate methods are G-computation, MSMs with IPTW, G-estimation, Q-learning, or dWOLS — all designed for this specific type of confounding.
 
 ---
 
@@ -624,19 +654,27 @@ python src/data/data_preprocessing.py
 
 ## Theoretical Framework
 
-- **Supercompensation**: Training stress → fatigue → recovery → adaptation cycle
-- **Gabbett's U-Shaped Risk Model**: ACWR sweet spot (0.8–1.3) minimizes injury risk; >1.5 = danger zone
-- **Individual Profiling**: Z-scores normalized per player (28-day rolling window)
-- **Sequential Treatment Effects**: How a 5-day training sequence affects match-day readiness
+- **Supercompensation**: Training stress → fatigue → recovery → adaptation. ACWR captures where a player sits on the stress-recovery-adaptation curve. Optimal intensity maximises the supercompensation response — neither zero nor maximal.
+- **Gabbett's U-Shaped Risk Model**: ACWR sweet spot (0.8–1.3) maximises fitness gains without spiking injury risk; ACWR > 1.5 = danger zone.
+- **Individual Profiling**: Z-scores normalized per player (28-day rolling window); GPS metrics as % of personal match benchmarks.
+- **Sequential Treatment Effects**: A single session does not determine match readiness — it is the sequence across the cycle that matters. This is precisely what the DTR framework captures.
+- **Dynamic Treatment Regime**: The optimal decision at time t depends on the full history of states and treatments up to t. The DTR maps this history to an optimal training intensity at each decision point.
 
 ## References
 
+- Chakraborty, B. & Moodie, E. E. M. (2013). *Statistical Methods for Dynamic Treatment Regimes*. Springer.
 - Gabbett, T. J. (2016). The training-injury prevention paradox. *BJSM, 50*(5), 273-280.
-- Curth et al. (2021). SurvITE: Individualized Treatment Effect estimator for Survival analysis. *NeurIPS*.
+- Hernan, M. A. & Robins, J. M. (2020). *Causal Inference: What If*. Chapman & Hall/CRC.
+- Hernan, M. A., Brumback, B., & Robins, J. M. (2001). Marginal structural models to estimate the joint causal effect of nonrandomized treatments. *JASA, 96*(454), 440-448.
+- Murphy, S. A. (2003). Optimal dynamic treatment regimes. *JRSS-B, 65*(2), 331-355.
+- Robins, J. M. (1986). A new approach to causal inference in mortality studies with sustained exposure periods. *Mathematical Modelling, 7*(9-12), 1393-1512.
+- Robins, J. M., Hernan, M. A., & Brumback, B. (2000). Marginal structural models and causal inference in epidemiology. *Epidemiology, 11*(5), 550-560.
+- Simoneau, G., Moodie, E. E. M., Nijjar, J. S., & Platt, R. W. (2020). Estimating optimal dynamic treatment regimes with survival outcomes. *JASA, 115*(531), 1531-1539.
+- Wallace, M. P. & Moodie, E. E. M. (2015). Doubly-robust dynamic treatment regimen estimation via weighted least squares. *Biometrics, 71*(3), 636-644.
 - Chen, T., & Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System. *KDD '16*.
 
 ---
 
-**Last Updated:** 2026-02-18
+**Last Updated:** 2026-02-25
 **Python Version:** 3.8+
 **Key Dependencies:** pandas, numpy, scikit-learn, xgboost, optuna, matplotlib, seaborn, reportlab, networkx

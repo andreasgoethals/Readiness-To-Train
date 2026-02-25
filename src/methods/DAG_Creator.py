@@ -1,233 +1,328 @@
 """
 DAG Creator for Causal Analysis of Longitudinal Match Cycles
+(Dynamic Treatment Regime Framework) -- Player-Specific Version
 
-Dynamically builds causal Directed Acyclic Graphs (DAGs) for player readiness
-modelling over multi-day training cycles. The DAG encodes the assumed causal
-structure between player state (baseline/covariates), daily treatments, and
-match-day performance (outcome), including inter-cycle feedback where match
-performance affects the player's state entering the next cycle.
+Builds a player-specific causal Directed Acyclic Graph (DAG) over all observed
+match cycles for one player. The DAG encodes the assumed causal structure between
+player state (Lt), daily treatment intensity (At), and match-day performance (Y),
+with inter-cycle feedback where match performance affects the starting state of
+the next cycle.
 
-=== DESIGN PHILOSOPHY ===
+=== USAGE ===
 
-The class is variable-name agnostic: it receives lists of variable names
-from a higher-level orchestrator and builds the temporal DAG structure
-programmatically. This means:
-- No variable names are hardcoded
-- The same class works for any set of state variables, treatments, or outcomes
-- The DAG structure (which nodes cause which) is determined by the temporal
-  unrolling logic, not by domain-specific knowledge baked into this class
-
-=== UNIFIED STATE CONCEPT ===
-
-Baseline variables, daily covariates, and post-match state all represent the
-same underlying concept: the player's state, measured through summarizing
-variables. The parameter `state_vars` captures all of these:
-- At t0 of each cycle: state variables serve as the BASELINE (role='baseline')
-- At t1..tN of each cycle: state variables serve as COVARIATES (role='covariate')
-- After the match: the outcome causally affects the state entering the next cycle
-
-=== MULTI-CYCLE CAUSAL STRUCTURE ===
-
-The DAG supports multiple consecutive match cycles with variable lengths,
-connected by outcome-to-baseline feedback edges:
-
-    CYCLE 1 (e.g. 5 days)                       CYCLE 2 (e.g. 7 days)
-    =====================                        =====================
-
-    State_c1_t0 (baseline)                       State_c2_t0 (baseline)
-        |                                            |
-        v                                            v
-    State_c1_t1 --> Treat_c1_t1                  State_c2_t1 --> Treat_c2_t1
-        |               |                           |               |
-        v               v                           v               v
-    State_c1_t2 --> Treat_c1_t2                  State_c2_t2 --> Treat_c2_t2
-        |               |                           |               |
-        :               :                           :               :
-        v               v                           v               v
-    State_c1_t5 --> Treat_c1_t5                  State_c2_t7 --> Treat_c2_t7
-        |               |                           |               |
-        v               v                           v               v
-        +-------+-------+                           +-------+-------+
-                |                                            |
-                v                                            v
-          Outcome_c1  -------(feedback)-------->       Outcome_c2
-       (match performance)  outcome_to_baseline     (match performance)
-
-Within each cycle:
-1. Baseline --> Day 1 state (initial conditions)
-2. Day t state --> Day t treatment (confounding: coaches decide based on state)
-3. Day t treatment --> Day t+1 state (causal effect of training)
-4. Day t state --> Day t+1 state (state carry-over / persistence)
-5. Final day treatment + state --> Outcome (match performance)
-
-Between cycles:
-6. Outcome_c{k} --> Baseline_c{k+1} (match performance affects next cycle's
-   starting state — e.g. physical toll of a match causes post-match fatigue)
-
-=== VARIABLE-LENGTH CYCLES ===
-
-Each player may have different cycle lengths depending on their match schedule.
-A player selected for every match might have cycles of [5, 5, 6, 5], while
-a player who misses a match might have [10, 5, 7] (the 10-day cycle spans
-two team match days but the player only played the second one). The
-`cycle_lengths` parameter accepts a list of integers to model this.
-
-Usage:
     from src.methods.DAG_Creator import DAGCreator
 
-    creator = DAGCreator()
-
-    # Single cycle
-    dag = creator.build_dag(
-        cycle_lengths=5,
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
+    creator = DAGCreator(
+        player_id=5,
+        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)', 'Days Until Match'],
+        treatment_var='Training Intensity Score',
+        outcome_var='Match Performance',
+        cross_var_carryover=False,   # self-only carryover (default)
     )
 
-    # Multi-cycle with variable lengths
-    dag = creator.build_dag(
-        cycle_lengths=[5, 7, 5],
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
+    # --- Object role: query the causal structure ---
+    print(creator.summary())
+    adj   = creator.to_adjacency_matrix()
+    tvc   = creator.get_time_varying_confounders()
+    paths = creator.get_causal_paths('Fatigue (z)_c1_t1', 'Match Performance_c1')
 
-    # Query feedback edges between cycles
-    feedback = creator.get_feedback_edges()
-    # [('Status Decrease_c1', 'Fatigue (z)_c2_t0'), ...]
+    # --- Visualisation role: two dimensions of control ---
+    #   cycles      (timing)      : None=all, int=one, list=subset
+    #   completeness (detail)     : 'schematic' or 'detailed'
+
+    creator.visualize(cycles=None,   completeness='schematic',
+                      save_path='results/dag_all_schematic.png')
+    creator.visualize(cycles=[1, 2], completeness='detailed',
+                      save_path='results/dag_cycles_1_2_detailed.png')
+    creator.visualize(cycles=1,      completeness='schematic',
+                      save_path='results/dag_cycle1_schematic.png')
+
+=== CAUSAL CONTEXT ===
+
+This project estimates an individualised optimal Dynamic Treatment Regime (DTR):
+a sequence of decision rules mapping each player's current and historical state
+(Lt) to an optimal continuous training intensity score At in [0, 1]. The key
+challenges are:
+
+1. Time-Varying Confounding Affected by Prior Treatment:
+   Lt is simultaneously a consequence of A(t-1) (training causes fatigue) and
+   a cause of At (coaches prescribe based on observed state). Standard
+   regression cannot handle this correctly -- this is the setting for G-methods.
+
+2. Treatment-Confounder Feedback:
+   Coaching decisions are observational. Hard sessions are prescribed when
+   players appear fresh; recovery when fatigued. Methods must disentangle the
+   physiological treatment effect from coach selection behaviour.
+
+3. Sequential Decision-Making:
+   The optimal policy is a sequence A1, A2, ..., AK over the entire match cycle,
+   not a single-point intervention. This is a K-stage DTR with variable K.
+
+=== MATCH CYCLE STRUCTURE ===
+
+A cycle runs from the day after one player-played match to the day of the next
+match where the player is selected. Non-selection on a team match day extends
+the current cycle -- the player keeps training until they next play.
+
+    CYCLE k (N training days + match at the end)
+
+    L0 (baseline state at start of cycle)
+     |
+     v  baseline_to_covariate
+    L1 --> A1 --> L2 --> A2 --> ... --> LN --> AN
+     |     |       |     |               |      |
+     |     | (treatment_effect)          |      |
+     |     +------►                      |      |
+     |        (state_carryover)          |      |
+     +──────────────────────────────────►      |
+                                               v
+                                               Y  (match-day performance)
+
+    Between cycles: Yk --> L0_(k+1)    (outcome_to_baseline feedback)
+
+=== NON-SELECTED PLAYERS ===
+
+If a player is NOT selected for a match (Match Day=1 for the team but
+Selected=0 for this player), that day is treated as a training day in their
+current cycle. The cycle only ends when the player personally plays. This means
+a cycle may span a team match day where the player did not participate, resulting
+in a longer cycle (e.g., 12 training days instead of 6).
+
+=== CROSS-VARIABLE CARRYOVER ===
+
+cross_var_carryover=False (default -- self-only, parsimonious):
+    Fatigue_t1 --> Fatigue_t2
+    Readiness_t1 --> Readiness_t2
+    (each variable only directly affects the same variable at t+1)
+
+cross_var_carryover=True (ALL-to-ALL, more biologically complete):
+    Fatigue_t1 --> {Fatigue_t2, Readiness_t2, Soreness_t2, ...}
+    Readiness_t1 --> {Fatigue_t2, Readiness_t2, Soreness_t2, ...}
+    (every state variable at t directly affects every state variable at t+1)
+
+The same rule applies consistently to BOTH baseline-->day1 AND day-->day+1
+carryover edges.
 """
 
 import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+from matplotlib.patches import FancyBboxPatch
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union, Tuple
 
 
 class DAGCreator:
     """
-    Dynamically builds causal DAGs for longitudinal match cycles.
+    Player-specific causal DAG builder for longitudinal DTR match cycles.
 
-    The DAG is constructed by 'unrolling' a temporal template over one or
-    more cycles of variable length, creating time-indexed nodes and directed
-    edges that encode the assumed causal relationships between player state,
-    daily treatments, and match-day performance.
+    Loads processed data for the specified player, auto-detects match cycles
+    from the player's own Activity Type Today (non-selected team match days
+    are treated as training days, making that cycle longer), and builds a
+    networkx DiGraph representing the full causal structure over all observed
+    cycles.
 
-    Multi-cycle DAGs include feedback edges where the outcome of each cycle
-    causally affects the baseline state of the next cycle, capturing how
-    match performance influences the player's recovery and starting state
-    for the following training block.
-
-    All variable names are provided externally — nothing is hardcoded.
+    Parameters
+    ----------
+    player_id : int
+        Player ID from the processed dataset (1-27).
+    state_vars : list of str
+        Covariate (player state) variable names Lt. Appear as baseline (t=0)
+        and daily covariates (t=1..N) in each cycle.
+    treatment_var : str
+        Treatment variable name At. Continuous daily training intensity in [0,1].
+    outcome_var : str
+        Outcome variable name Y. Match-day physical performance metric.
+    data_path : str or Path, optional
+        Path to processed CSV. Defaults to data/processed/Readiness_Data.csv
+        relative to the project root.
+    cross_var_carryover : bool, default=False
+        If False: self-only carryover -- each state variable at t only directly
+        affects the same variable at t+1 (N edges per step, parsimonious).
+        If True: ALL-to-ALL -- every state variable at t affects every state
+        variable at t+1 (N^2 edges per step, biologically richer).
+        Applied consistently to both baseline->day1 and day->day+1 transitions.
 
     Attributes
     ----------
-    dag : nx.DiGraph or None
-        The most recently built DAG. None before build_dag() is called.
-    metadata : dict or None
-        Metadata about the most recently built DAG.
+    dag : nx.DiGraph
+        The constructed causal DAG. Built automatically at init.
+    metadata : dict
+        Metadata about the DAG structure (cycle counts, node/edge counts, etc.).
+    cycle_lengths : list of int
+        Auto-detected lengths of each match cycle for this player.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        player_id: int,
+        state_vars: List[str],
+        treatment_var: str,
+        outcome_var: str,
+        data_path: Optional[Union[str, Path]] = None,
+        cross_var_carryover: bool = False,
+    ):
+        # Validate inputs
+        if not state_vars:
+            raise ValueError("state_vars must not be empty")
+        if not treatment_var:
+            raise ValueError("treatment_var must not be empty")
+        if not outcome_var:
+            raise ValueError("outcome_var must not be empty")
+        if treatment_var in state_vars:
+            raise ValueError(
+                f"treatment_var '{treatment_var}' must not appear in state_vars"
+            )
+
+        self.player_id = player_id
+        self.state_vars = list(state_vars)
+        self.treatment_var = treatment_var
+        self.outcome_var = outcome_var
+        self.cross_var_carryover = cross_var_carryover
+
+        # Load data, detect cycles, build DAG (all automatic)
+        self._player_df: pd.DataFrame = self._load_player_data(data_path)
+        self.cycle_lengths: List[int] = self._detect_cycle_lengths()
         self.dag: Optional[nx.DiGraph] = None
         self.metadata: Optional[Dict[str, Any]] = None
+        self._build_dag()
 
-    # =====================================================================
-    # NODE NAMING
-    # =====================================================================
+    # =========================================================================
+    # DATA LOADING & CYCLE DETECTION
+    # =========================================================================
 
-    @staticmethod
-    def _node_name(var: str, cycle: int, day: int) -> str:
+    def _load_player_data(
+        self,
+        data_path: Optional[Union[str, Path]],
+    ) -> pd.DataFrame:
+        """Load and return the processed data rows for this player, sorted by Date."""
+        if data_path is None:
+            script_dir = Path(__file__).parent
+            project_root = script_dir.parent.parent
+            data_path = project_root / "data" / "processed" / "Readiness_Data.csv"
+
+        data_path = Path(data_path)
+        if not data_path.exists():
+            raise FileNotFoundError(
+                f"Processed data not found at '{data_path}'. "
+                "Run src/data/data_preprocessing.py first."
+            )
+
+        df = pd.read_csv(data_path, parse_dates=['Date'])
+        player_df = df[df['Player ID'] == self.player_id].copy()
+
+        if len(player_df) == 0:
+            valid_ids = sorted(df['Player ID'].unique().tolist())
+            raise ValueError(
+                f"Player ID {self.player_id} not found in the processed data. "
+                f"Valid IDs: {valid_ids}"
+            )
+
+        return player_df.sort_values('Date').reset_index(drop=True)
+
+    def _detect_cycle_lengths(self) -> List[int]:
         """
-        Create a node name for a state or treatment variable.
+        Auto-detect match cycle lengths from this player's data.
 
-        Format: '{var}_c{cycle}_t{day}'
+        A cycle ends when the player personally plays a match
+        (Activity Type Today == 'Game' for this specific player).
 
-        Parameters
-        ----------
-        var : str
-            The variable name (e.g., 'Fatigue (z)').
-        cycle : int
-            The cycle index (1-based).
-        day : int
-            The day index within the cycle (0 for baseline, 1..N for daily).
+        Non-selected match days (Match Day=1 for the team, but this player's
+        Activity Type Today != 'Game') are treated as regular training days,
+        extending the current cycle. This correctly models the case where a
+        player's cycle spans a team match they didn't participate in.
 
         Returns
         -------
-        str
-            Node name, e.g. 'Fatigue (z)_c1_t3'.
+        list of int
+            Cycle lengths = number of training-day nodes (At nodes) per cycle.
+            Empty list if no matches found for this player.
         """
+        df = self._player_df
+
+        if 'Activity Type Today' not in df.columns:
+            raise ValueError(
+                "'Activity Type Today' column not found. "
+                "Run src/data/data_preprocessing.py to create the processed dataset."
+            )
+
+        # Only rows where THIS PLAYER personally played (not just team match days)
+        played_mask = df['Activity Type Today'].str.strip().str.lower() == 'game'
+        match_positions = df.index[played_mask].tolist()  # Positions in 0-indexed sorted df
+
+        if not match_positions:
+            return []
+
+        cycle_lengths = []
+        prev_end = -1  # Position of the previous match row
+
+        for match_pos in match_positions:
+            # Cycle starts at the row immediately after the previous match
+            cycle_start = prev_end + 1
+            # Cycle ends at the match row (inclusive)
+            cycle_end = match_pos
+
+            # Baseline (L0) = row at cycle_start
+            # Treatment days (t1..tN) = rows cycle_start+1 .. cycle_end
+            n_treatment_days = cycle_end - cycle_start
+
+            # Guarantee at least 1 treatment day (even if match follows immediately)
+            cycle_lengths.append(max(1, n_treatment_days))
+            prev_end = match_pos
+
+        return cycle_lengths
+
+    # =========================================================================
+    # NODE NAMING (static helpers)
+    # =========================================================================
+
+    @staticmethod
+    def _node_name(var: str, cycle: int, day: int) -> str:
+        """State/treatment node name: '{var}_c{cycle}_t{day}'."""
         return f"{var}_c{cycle}_t{day}"
 
     @staticmethod
     def _outcome_node_name(var: str, cycle: int) -> str:
-        """
-        Create a node name for an outcome variable.
-
-        Format: '{var}_c{cycle}'
-
-        Parameters
-        ----------
-        var : str
-            The outcome variable name (e.g., 'Status Decrease').
-        cycle : int
-            The cycle index (1-based).
-
-        Returns
-        -------
-        str
-            Node name, e.g. 'Status Decrease_c1'.
-        """
+        """Outcome node name: '{var}_c{cycle}'."""
         return f"{var}_c{cycle}"
 
-    # =====================================================================
-    # SINGLE-CYCLE CONSTRUCTION (PRIVATE)
-    # =====================================================================
+    # =========================================================================
+    # DAG CONSTRUCTION (private)
+    # =========================================================================
 
     def _build_single_cycle(
         self,
         G: nx.DiGraph,
         cycle: int,
         n_days: int,
-        state_vars: List[str],
-        daily_treatment_var: str,
-        outcome_var: str,
         absolute_time_offset: int,
     ) -> Dict[str, Any]:
         """
-        Build nodes and intra-cycle edges for a single match cycle.
+        Build nodes and intra-cycle edges for one match cycle.
 
         Parameters
         ----------
         G : nx.DiGraph
-            The graph to add nodes and edges to (modified in place).
+            Graph to extend in place.
         cycle : int
-            The cycle index (1-based).
+            1-based cycle index.
         n_days : int
-            Number of training days in this cycle.
-        state_vars : list of str
-            Player state variables (baseline at t0, covariates at t1..tN).
-        daily_treatment_var : str
-            Treatment variable name.
-        outcome_var : str
-            Outcome variable name (match-day performance).
+            Number of training days (= number of At nodes) in this cycle.
         absolute_time_offset : int
-            The absolute time index for t0 of this cycle.
+            Absolute time index for t=0 of this cycle.
 
         Returns
         -------
-        dict
-            Contains:
-            - 'baseline_nodes': list of baseline node names
-            - 'outcome_node': the outcome node name
-            - 'absolute_time_end': absolute time of the outcome node
+        dict with 'baseline_nodes', 'outcome_node', 'absolute_time_end'.
         """
-        # ---------------------------------------------------------------
-        # Step 1: Create baseline nodes (state_vars at t0)
-        # ---------------------------------------------------------------
+        state_vars = self.state_vars
+        treatment_var = self.treatment_var
+        outcome_var = self.outcome_var
+        cross = self.cross_var_carryover
+
+        # --- Step 1: Baseline nodes (L0) ---
         baseline_nodes = []
         for var in state_vars:
             node = self._node_name(var, cycle, 0)
@@ -235,85 +330,68 @@ class DAGCreator:
                        absolute_time=absolute_time_offset, role='baseline')
             baseline_nodes.append(node)
 
-        # ---------------------------------------------------------------
-        # Step 2: Create daily covariate + treatment nodes (t1..tN)
-        # ---------------------------------------------------------------
+        # --- Step 2: Daily covariate + treatment nodes (t1..tN) ---
         for day in range(1, n_days + 1):
             abs_time = absolute_time_offset + day
-
-            # Covariate nodes (state at this day)
             for var in state_vars:
                 node = self._node_name(var, cycle, day)
                 G.add_node(node, variable=var, cycle=cycle, day=day,
                            absolute_time=abs_time, role='covariate')
-
-            # Treatment node
-            treat_node = self._node_name(daily_treatment_var, cycle, day)
-            G.add_node(treat_node, variable=daily_treatment_var,
+            treat_node = self._node_name(treatment_var, cycle, day)
+            G.add_node(treat_node, variable=treatment_var,
                        cycle=cycle, day=day, absolute_time=abs_time,
                        role='treatment')
 
-        # ---------------------------------------------------------------
-        # Step 3: Create outcome node (match-day performance)
-        # ---------------------------------------------------------------
+        # --- Step 3: Outcome node Y ---
         outcome_abs_time = absolute_time_offset + n_days + 1
         outcome_node = self._outcome_node_name(outcome_var, cycle)
         G.add_node(outcome_node, variable=outcome_var, cycle=cycle,
-                   day=n_days + 1, absolute_time=outcome_abs_time,
-                   role='outcome')
+                   day=n_days + 1, absolute_time=outcome_abs_time, role='outcome')
 
-        # ---------------------------------------------------------------
-        # Step 4: Baseline --> Day 1 covariates
-        # ---------------------------------------------------------------
-        for baseline_var in state_vars:
-            b_node = self._node_name(baseline_var, cycle, 0)
-            for cov_var in state_vars:
-                c_node = self._node_name(cov_var, cycle, 1)
-                G.add_edge(b_node, c_node,
-                           relation='baseline_to_covariate')
+        # --- Step 4: Baseline --> Day 1 (baseline_to_covariate) ---
+        # cross_var_carryover=False: self-only (baseline_var_i --> cov_var_i)
+        # cross_var_carryover=True:  ALL-to-ALL (every baseline_var --> every cov_var)
+        for src_var in state_vars:
+            b_node = self._node_name(src_var, cycle, 0)
+            tgt_vars = state_vars if cross else [src_var]
+            for tgt_var in tgt_vars:
+                c_node = self._node_name(tgt_var, cycle, 1)
+                G.add_edge(b_node, c_node, relation='baseline_to_covariate')
 
-        # ---------------------------------------------------------------
-        # Step 5: Daily structure (days 1..N)
-        # ---------------------------------------------------------------
+        # --- Step 5: Daily structure (days 1..N) ---
         for day in range(1, n_days + 1):
-            treat_node = self._node_name(daily_treatment_var, cycle, day)
+            treat_node = self._node_name(treatment_var, cycle, day)
 
-            # 5a. Covariates --> Treatment (confounding)
+            # 5a. Lt --> At  (confounding: coaches prescribe based on player state)
             for var in state_vars:
                 cov_node = self._node_name(var, cycle, day)
-                G.add_edge(cov_node, treat_node,
-                           relation='confounding')
+                G.add_edge(cov_node, treat_node, relation='confounding')
 
-            # 5b. Carry-over to next day (if not last day)
+            # 5b. Carry-over to the next day
             if day < n_days:
                 next_day = day + 1
 
-                # Treatment --> next-day covariates (treatment effect)
+                # At --> L(t+1)  (treatment effect: training changes fatigue/fitness)
                 for var in state_vars:
                     next_cov = self._node_name(var, cycle, next_day)
-                    G.add_edge(treat_node, next_cov,
-                               relation='treatment_effect')
+                    G.add_edge(treat_node, next_cov, relation='treatment_effect')
 
-                # Covariates --> next-day covariates (state carry-over)
-                for var in state_vars:
-                    curr_cov = self._node_name(var, cycle, day)
-                    next_cov = self._node_name(var, cycle, next_day)
-                    G.add_edge(curr_cov, next_cov,
-                               relation='state_carryover')
+                # Lt --> L(t+1)  (state carryover / persistence)
+                # cross_var_carryover=False: self-only (same var, N edges)
+                # cross_var_carryover=True:  ALL-to-ALL (N^2 edges)
+                for src_var in state_vars:
+                    curr_cov = self._node_name(src_var, cycle, day)
+                    tgt_vars = state_vars if cross else [src_var]
+                    for tgt_var in tgt_vars:
+                        next_cov = self._node_name(tgt_var, cycle, next_day)
+                        G.add_edge(curr_cov, next_cov, relation='state_carryover')
 
-        # ---------------------------------------------------------------
-        # Step 6: Final day --> Outcome
-        # ---------------------------------------------------------------
-        # Last treatment --> outcome
-        final_treat = self._node_name(daily_treatment_var, cycle, n_days)
-        G.add_edge(final_treat, outcome_node,
-                   relation='treatment_to_outcome')
-
-        # Last day covariates --> outcome
+        # --- Step 6: Final day --> Outcome Y ---
+        final_treat = self._node_name(treatment_var, cycle, n_days)
+        G.add_edge(final_treat, outcome_node, relation='treatment_to_outcome')
         for var in state_vars:
             final_cov = self._node_name(var, cycle, n_days)
-            G.add_edge(final_cov, outcome_node,
-                       relation='covariate_to_outcome')
+            G.add_edge(final_cov, outcome_node, relation='covariate_to_outcome')
 
         return {
             'baseline_nodes': baseline_nodes,
@@ -321,127 +399,42 @@ class DAGCreator:
             'absolute_time_end': outcome_abs_time,
         }
 
-    # =====================================================================
-    # PUBLIC API: DAG CONSTRUCTION
-    # =====================================================================
-
-    def build_dag(
-        self,
-        cycle_lengths: Union[int, List[int]],
-        state_vars: List[str],
-        daily_treatment_var: str,
-        outcome_var: str,
-    ) -> nx.DiGraph:
-        """
-        Build a causal DAG by unrolling one or more match cycles.
-
-        Each cycle represents a training block leading up to a match. The
-        outcome at the end of each cycle represents match-day performance.
-        In multi-cycle DAGs, the outcome of cycle k feeds back into the
-        baseline state of cycle k+1, capturing how match performance
-        influences recovery and starting state for the next training block.
-
-        Cycles can have different lengths to model the reality that players
-        have variable schedules (some play every match, some skip matches,
-        international breaks cause longer gaps, etc.).
-
-        Parameters
-        ----------
-        cycle_lengths : int or list of int
-            Length(s) of the match cycle(s) in days. A single integer creates
-            one cycle (e.g., 5). A list creates multiple connected cycles
-            (e.g., [5, 7, 5] creates 3 cycles of 5, 7, and 5 days).
-            Each value must be >= 1.
-        state_vars : list of str
-            Player state variables that appear as baseline (t0 of each
-            cycle) and as daily covariates (t1..tN of each cycle). These
-            represent the player's condition through summarizing variables
-            like wellness z-scores, physical state, etc.
-        daily_treatment_var : str
-            The treatment (intervention) variable name instantiated for
-            each day of each cycle (e.g., 'Activity Type Today').
-        outcome_var : str
-            The outcome variable at the end of each cycle, representing
-            match-day performance (e.g., 'Status Decrease'). In multi-cycle
-            DAGs, this outcome feeds back into the next cycle's baseline.
-
-        Returns
-        -------
-        nx.DiGraph
-            A directed acyclic graph with time-indexed nodes and causal edges.
-            Node attributes: 'variable', 'cycle', 'day', 'absolute_time', 'role'.
-            Edge attributes: 'relation'.
-
-        Raises
-        ------
-        ValueError
-            If any cycle length < 1, variable lists are empty, or treatment
-            variable overlaps with state variables.
-        """
-        # -----------------------------------------------------------------
-        # Normalize cycle_lengths
-        # -----------------------------------------------------------------
-        if isinstance(cycle_lengths, int):
-            cycle_lengths = [cycle_lengths]
-
-        # -----------------------------------------------------------------
-        # Input validation
-        # -----------------------------------------------------------------
-        if not cycle_lengths:
-            raise ValueError("cycle_lengths must not be empty")
-        for i, length in enumerate(cycle_lengths):
-            if length < 1:
-                raise ValueError(
-                    f"All cycle lengths must be >= 1, got {length} "
-                    f"at index {i}"
-                )
-        if not state_vars:
-            raise ValueError("state_vars must not be empty")
-        if not daily_treatment_var:
-            raise ValueError("daily_treatment_var must not be empty")
-        if not outcome_var:
-            raise ValueError("outcome_var must not be empty")
-        if daily_treatment_var in state_vars:
+    def _build_dag(self) -> None:
+        """Build the full multi-cycle DAG from detected cycle lengths."""
+        if not self.cycle_lengths:
             raise ValueError(
-                f"daily_treatment_var '{daily_treatment_var}' must not "
-                f"appear in state_vars"
+                f"No matches found for player {self.player_id}. "
+                "Cannot build a DTR DAG without at least one observed outcome. "
+                "Check that the processed data contains 'Activity Type Today' "
+                "entries equal to 'Game' for this player."
             )
 
-        # -----------------------------------------------------------------
-        # Build graph
-        # -----------------------------------------------------------------
         G = nx.DiGraph()
-
-        n_cycles = len(cycle_lengths)
+        n_cycles = len(self.cycle_lengths)
         absolute_time_offset = 0
-        cycle_info = []  # Track per-cycle metadata
+        cycle_info = []
         prev_outcome_node = None
 
         for k in range(1, n_cycles + 1):
-            n_days = cycle_lengths[k - 1]
+            n_days = self.cycle_lengths[k - 1]
 
-            # Build this cycle's internal structure
             result = self._build_single_cycle(
                 G, cycle=k, n_days=n_days,
-                state_vars=state_vars,
-                daily_treatment_var=daily_treatment_var,
-                outcome_var=outcome_var,
                 absolute_time_offset=absolute_time_offset,
             )
 
-            # Add feedback edges from previous cycle's outcome
+            # Inter-cycle feedback: Y_{k-1} --> L0_k
             if prev_outcome_node is not None:
-                for var in state_vars:
+                for var in self.state_vars:
                     baseline_node = self._node_name(var, k, 0)
                     G.add_edge(prev_outcome_node, baseline_node,
                                relation='outcome_to_baseline')
 
-            # Track metadata
             cycle_info.append({
                 'cycle': k,
                 'n_days': n_days,
-                'n_baseline_nodes': len(state_vars),
-                'n_covariate_nodes': len(state_vars) * n_days,
+                'n_baseline_nodes': len(self.state_vars),
+                'n_covariate_nodes': len(self.state_vars) * n_days,
                 'n_treatment_nodes': n_days,
                 'n_outcome_nodes': 1,
             })
@@ -449,18 +442,12 @@ class DAGCreator:
             prev_outcome_node = result['outcome_node']
             absolute_time_offset = result['absolute_time_end'] + 1
 
-        # -----------------------------------------------------------------
-        # Validate DAG (must be acyclic)
-        # -----------------------------------------------------------------
         if not nx.is_directed_acyclic_graph(G):
             raise RuntimeError(
-                "Constructed graph contains cycles — this should not happen "
-                "with the temporal unrolling logic. Please report this as a bug."
+                "Constructed graph contains cycles -- this should not happen "
+                "with temporal unrolling. Please report this as a bug."
             )
 
-        # -----------------------------------------------------------------
-        # Store results
-        # -----------------------------------------------------------------
         n_feedback = sum(
             1 for _, _, d in G.edges(data=True)
             if d.get('relation') == 'outcome_to_baseline'
@@ -468,41 +455,36 @@ class DAGCreator:
 
         self.dag = G
         self.metadata = {
+            'player_id': self.player_id,
             'n_cycles': n_cycles,
-            'cycle_lengths': list(cycle_lengths),
-            'state_vars': list(state_vars),
-            'daily_treatment_var': daily_treatment_var,
-            'outcome_var': outcome_var,
+            'cycle_lengths': list(self.cycle_lengths),
+            'state_vars': list(self.state_vars),
+            'daily_treatment_var': self.treatment_var,
+            'outcome_var': self.outcome_var,
+            'cross_var_carryover': self.cross_var_carryover,
             'n_nodes': G.number_of_nodes(),
             'n_edges': G.number_of_edges(),
             'n_feedback_edges': n_feedback,
             'per_cycle': cycle_info,
         }
 
-        return G
-
-    # =====================================================================
-    # QUERY METHODS
-    # =====================================================================
+    # =========================================================================
+    # QUERY METHODS -- DAG OBJECT ROLE
+    # =========================================================================
 
     def _check_dag(self):
-        """Raise RuntimeError if no DAG has been built yet."""
+        """Raise RuntimeError if no DAG has been built."""
         if self.dag is None:
-            raise RuntimeError("No DAG built yet. Call build_dag() first.")
+            raise RuntimeError("No DAG built. This should not happen -- check __init__.")
 
     def get_nodes_by_role(self, role: str) -> List[str]:
         """
-        Get all node names with a given role.
+        Get all node names with a given role, sorted by absolute time.
 
         Parameters
         ----------
         role : str
             One of 'baseline', 'covariate', 'treatment', 'outcome'.
-
-        Returns
-        -------
-        list of str
-            Node names matching the specified role, sorted by absolute time.
         """
         self._check_dag()
         nodes = [
@@ -515,19 +497,7 @@ class DAGCreator:
         ))
 
     def get_nodes_at_time(self, time: int) -> List[str]:
-        """
-        Get all node names at a specific absolute time index.
-
-        Parameters
-        ----------
-        time : int
-            The absolute time index across all cycles.
-
-        Returns
-        -------
-        list of str
-            Node names at the specified absolute time, sorted alphabetically.
-        """
+        """Get all node names at a specific absolute time index."""
         self._check_dag()
         return sorted([
             n for n, attrs in self.dag.nodes(data=True)
@@ -535,19 +505,7 @@ class DAGCreator:
         ])
 
     def get_nodes_in_cycle(self, cycle: int) -> List[str]:
-        """
-        Get all nodes belonging to a specific cycle.
-
-        Parameters
-        ----------
-        cycle : int
-            The cycle index (1-based).
-
-        Returns
-        -------
-        list of str
-            Node names in the specified cycle, sorted by day then variable.
-        """
+        """Get all nodes belonging to a specific cycle (1-based), sorted by day."""
         self._check_dag()
         nodes = [
             n for n, attrs in self.dag.nodes(data=True)
@@ -559,22 +517,7 @@ class DAGCreator:
         ))
 
     def get_nodes_at_cycle_day(self, cycle: int, day: int) -> List[str]:
-        """
-        Get all nodes at a specific day within a specific cycle.
-
-        Parameters
-        ----------
-        cycle : int
-            The cycle index (1-based).
-        day : int
-            The day index within the cycle (0 for baseline, 1..N for daily,
-            N+1 for outcome).
-
-        Returns
-        -------
-        list of str
-            Node names at the specified cycle and day, sorted alphabetically.
-        """
+        """Get all nodes at a specific day within a specific cycle."""
         self._check_dag()
         return sorted([
             n for n, attrs in self.dag.nodes(data=True)
@@ -582,78 +525,24 @@ class DAGCreator:
         ])
 
     def get_cycle_outcome(self, cycle: int) -> str:
-        """
-        Get the outcome node name for a given cycle.
-
-        Parameters
-        ----------
-        cycle : int
-            The cycle index (1-based).
-
-        Returns
-        -------
-        str
-            The outcome node name (e.g., 'Status Decrease_c1').
-
-        Raises
-        ------
-        ValueError
-            If the cycle index is out of range.
-        """
+        """Get the outcome node name for a given cycle (1-based)."""
         self._check_dag()
-        if self.metadata is None:
-            raise RuntimeError("No metadata available.")
-        outcome_var = self.metadata['outcome_var']
-        n_cycles = self.metadata['n_cycles']
-        if cycle < 1 or cycle > n_cycles:
-            raise ValueError(
-                f"cycle must be between 1 and {n_cycles}, got {cycle}"
-            )
-        return self._outcome_node_name(outcome_var, cycle)
+        m = self.metadata
+        if cycle < 1 or cycle > m['n_cycles']:
+            raise ValueError(f"cycle must be between 1 and {m['n_cycles']}, got {cycle}")
+        return self._outcome_node_name(m['outcome_var'], cycle)
 
     def get_feedback_edges(self) -> List[tuple]:
-        """
-        Get all outcome-to-baseline feedback edges between cycles.
-
-        Returns
-        -------
-        list of tuple
-            (source, target) pairs where source is an outcome node and
-            target is a baseline node of the next cycle.
-        """
+        """Get all outcome-to-baseline inter-cycle feedback edges."""
         return self.get_edges_by_relation('outcome_to_baseline')
 
     def get_parents(self, node: str) -> List[str]:
-        """
-        Get the parent nodes (direct causes) of a given node.
-
-        Parameters
-        ----------
-        node : str
-            The node name.
-
-        Returns
-        -------
-        list of str
-            Parent node names, sorted alphabetically.
-        """
+        """Get direct causes (parents) of a node."""
         self._check_dag()
         return sorted(list(self.dag.predecessors(node)))
 
     def get_children(self, node: str) -> List[str]:
-        """
-        Get the child nodes (direct effects) of a given node.
-
-        Parameters
-        ----------
-        node : str
-            The node name.
-
-        Returns
-        -------
-        list of str
-            Child node names, sorted alphabetically.
-        """
+        """Get direct effects (children) of a node."""
         self._check_dag()
         return sorted(list(self.dag.successors(node)))
 
@@ -664,15 +553,9 @@ class DAGCreator:
         Parameters
         ----------
         relation : str
-            One of 'baseline_to_covariate', 'confounding',
-            'treatment_effect', 'state_carryover',
-            'treatment_to_outcome', 'covariate_to_outcome',
+            One of: 'baseline_to_covariate', 'confounding', 'treatment_effect',
+            'state_carryover', 'treatment_to_outcome', 'covariate_to_outcome',
             'outcome_to_baseline'.
-
-        Returns
-        -------
-        list of tuple
-            (source, target) edge pairs matching the relation.
         """
         self._check_dag()
         return [
@@ -680,787 +563,905 @@ class DAGCreator:
             if attrs.get('relation') == relation
         ]
 
-    # =====================================================================
-    # VISUALIZATION
-    # =====================================================================
-
-    # --- Color palette ---
-    # Consistent across all visualization methods for recognizability
-    _COLORS = {
-        'baseline':   '#4CAF50',   # Green — player state at cycle start
-        'covariate':  '#2196F3',   # Blue — daily player state
-        'treatment':  '#FF9800',   # Orange — training intensity
-        'outcome':    '#E53935',   # Red — match-day performance
-        'feedback':   '#9C27B0',   # Purple — inter-cycle feedback edges
-        'background': '#FAFAFA',   # Light grey — figure background
-        'cycle_bg':   '#F0F0F0',   # Cycle background box
-        'text':       '#1a1a2e',   # Dark text
-        'edge':       '#666666',   # Default edge color
-    }
-
-    # --- Edge style mapping ---
-    _EDGE_STYLES = {
-        'baseline_to_covariate': {'color': '#4CAF50', 'style': '-',  'alpha': 0.5, 'width': 1.0},
-        'confounding':           {'color': '#FF9800', 'style': '--', 'alpha': 0.7, 'width': 1.2},
-        'treatment_effect':      {'color': '#E53935', 'style': '-',  'alpha': 0.7, 'width': 1.5},
-        'state_carryover':       {'color': '#2196F3', 'style': '-',  'alpha': 0.4, 'width': 1.0},
-        'treatment_to_outcome':  {'color': '#E53935', 'style': '-',  'alpha': 0.8, 'width': 1.8},
-        'covariate_to_outcome':  {'color': '#2196F3', 'style': '-',  'alpha': 0.6, 'width': 1.2},
-        'outcome_to_baseline':   {'color': '#9C27B0', 'style': '-',  'alpha': 0.9, 'width': 2.0},
-    }
-
-    def _get_node_color(self, role: str) -> str:
-        """Map node role to color."""
-        return self._COLORS.get(role, '#CCCCCC')
-
-    def _compute_layout(
-        self,
-        nodes: List[str],
-        cycle: Optional[int] = None,
-    ) -> Dict[str, Tuple[float, float]]:
+    def get_time_varying_confounders(self) -> List[str]:
         """
-        Compute (x, y) positions for nodes using a temporal left-to-right layout.
+        Identify time-varying confounders affected by prior treatment.
 
-        Within each time step (column), nodes are stacked vertically:
-        state variables on top, treatment below. The outcome node is placed
-        at the far right.
+        A node Lt is a time-varying confounder affected by prior treatment if:
+          1. It is a covariate (role='covariate')
+          2. It has a treatment node as a parent  (affected by prior treatment)
+          3. It has a treatment node as a child   (confounds current treatment)
 
-        Parameters
-        ----------
-        nodes : list of str
-            Node names to position.
-        cycle : int or None
-            If provided, only position nodes from this cycle.
+        These are precisely the nodes requiring G-methods for unbiased estimation.
+        """
+        self._check_dag()
+        G = self.dag
+        result = []
+        for node, attrs in G.nodes(data=True):
+            if attrs.get('role') != 'covariate':
+                continue
+            parents_are_treatment = any(
+                G.nodes[p].get('role') == 'treatment'
+                for p in G.predecessors(node)
+            )
+            children_are_treatment = any(
+                G.nodes[c].get('role') == 'treatment'
+                for c in G.successors(node)
+            )
+            if parents_are_treatment and children_are_treatment:
+                result.append(node)
+        return sorted(result, key=lambda n: (
+            G.nodes[n].get('absolute_time', 0),
+            G.nodes[n].get('variable', '')
+        ))
+
+    def to_adjacency_matrix(self) -> pd.DataFrame:
+        """
+        Export the DAG as a square adjacency matrix (pandas DataFrame).
+
+        Nodes are sorted by absolute_time then variable name. Entry [i, j] = 1
+        if there is a directed edge from node i to node j.
+        """
+        self._check_dag()
+        nodes = sorted(
+            self.dag.nodes(),
+            key=lambda n: (
+                self.dag.nodes[n].get('absolute_time', 0),
+                self.dag.nodes[n].get('variable', n)
+            )
+        )
+        adj = pd.DataFrame(0, index=nodes, columns=nodes, dtype=int)
+        for u, v in self.dag.edges():
+            adj.loc[u, v] = 1
+        return adj
+
+    def get_causal_paths(self, source: str, target: str) -> List[List[str]]:
+        """
+        Find all directed causal paths from source to target node.
 
         Returns
         -------
-        dict
-            {node_name: (x, y)} positions.
+        list of list of str
+            Each inner list is a path (sequence of node names). Empty if none.
         """
-        G = self.dag
-        pos = {}
+        self._check_dag()
+        try:
+            return list(nx.all_simple_paths(self.dag, source, target))
+        except nx.NetworkXError:
+            return []
 
-        # Filter nodes if cycle specified
-        if cycle is not None:
-            nodes = [n for n in nodes if G.nodes[n].get('cycle') == cycle]
+    # =========================================================================
+    # VISUALIZATION -- PUBLICATION-READY FIGURES
+    # =========================================================================
 
-        if not nodes:
-            return pos
+    _COLORS = {
+        'baseline':   '#1A6B4A',   # Deep emerald  -- baseline state L0
+        'covariate':  '#1D4E89',   # Deep blue     -- time-varying state Lt
+        'treatment':  '#B5451B',   # Burnt sienna  -- treatment At
+        'outcome':    '#7B1D1D',   # Deep crimson  -- match outcome Y
+        'feedback':   '#4A1472',   # Deep purple   -- inter-cycle feedback
+        'background': '#F8F9FA',   # Off-white background
+        'cycle_bg':   '#EEF2F7',   # Subtle cycle background
+        'text':       '#1C2B39',   # Dark navy text
+        'edge':       '#5A6A7A',   # Blue-grey default edge
+    }
 
-        # Group nodes by day
-        day_groups: Dict[int, List[str]] = {}
-        for n in nodes:
-            day = G.nodes[n].get('day', 0)
-            day_groups.setdefault(day, [])
-            day_groups[day].append(n)
+    _EDGE_STYLES = {
+        'baseline_to_covariate': {
+            'color': '#1A6B4A', 'style': '-',  'alpha': 0.65, 'width': 1.4,
+            'label': 'Initial conditions (L0 -> Lt)',
+        },
+        'confounding': {
+            'color': '#B5451B', 'style': '--', 'alpha': 0.90, 'width': 1.8,
+            'label': 'Confounding (Lt -> At)',
+        },
+        'treatment_effect': {
+            'color': '#8B0000', 'style': '-',  'alpha': 0.90, 'width': 2.0,
+            'label': 'Treatment effect (At -> L(t+1))',
+        },
+        'state_carryover': {
+            'color': '#1D4E89', 'style': '-',  'alpha': 0.55, 'width': 1.4,
+            'label': 'State carry-over (Lt -> L(t+1))',
+        },
+        'treatment_to_outcome': {
+            'color': '#8B0000', 'style': '-',  'alpha': 0.92, 'width': 2.2,
+            'label': 'Treatment -> outcome',
+        },
+        'covariate_to_outcome': {
+            'color': '#1D4E89', 'style': '-',  'alpha': 0.75, 'width': 1.6,
+            'label': 'State -> outcome',
+        },
+        'outcome_to_baseline': {
+            'color': '#4A1472', 'style': '-',  'alpha': 0.95, 'width': 2.5,
+            'label': 'Inter-cycle feedback (Yk -> L0_(k+1))',
+        },
+    }
 
-        # Sort days
-        sorted_days = sorted(day_groups.keys())
-
-        # Compute vertical positions: state vars on top, treatment below, outcome centered
-        state_vars = self.metadata['state_vars']
-        n_state = len(state_vars)
-
-        x_spacing = 2.0
-        y_spacing = 1.2
-
-        for col_idx, day in enumerate(sorted_days):
-            x = col_idx * x_spacing
-            day_nodes = day_groups[day]
-
-            # Separate by role
-            state_nodes = [n for n in day_nodes if G.nodes[n].get('role') in ('baseline', 'covariate')]
-            treat_nodes = [n for n in day_nodes if G.nodes[n].get('role') == 'treatment']
-            outcome_nodes = [n for n in day_nodes if G.nodes[n].get('role') == 'outcome']
-
-            # Sort state nodes by variable order (same order as state_vars)
-            var_order = {v: i for i, v in enumerate(state_vars)}
-            state_nodes.sort(key=lambda n: var_order.get(G.nodes[n].get('variable', ''), 999))
-
-            # Position state nodes (top, stacked vertically)
-            total_height = (n_state - 1) * y_spacing
-            for i, n in enumerate(state_nodes):
-                y = total_height / 2 - i * y_spacing
-                pos[n] = (x, y)
-
-            # Position treatment node (below state nodes)
-            for i, n in enumerate(treat_nodes):
-                y = -total_height / 2 - y_spacing * (1 + i)
-                pos[n] = (x, y)
-
-            # Position outcome node (vertically centered)
-            for n in outcome_nodes:
-                pos[n] = (x, 0)
-
-        return pos
+    def _get_node_color(self, role: str) -> str:
+        return self._COLORS.get(role, '#888888')
 
     def visualize(
         self,
-        mode: str = 'schematic',
-        cycle: Optional[int] = None,
-        figsize: Optional[Tuple[float, float]] = None,
+        cycles: Optional[Union[int, List[int]]] = None,
+        completeness: str = 'schematic',
         save_path: Optional[str] = None,
-        dpi: int = 150,
+        figsize: Optional[Tuple[float, float]] = None,
         title: Optional[str] = None,
+        dpi: int = 150,
         show: bool = True,
     ) -> plt.Figure:
         """
         Visualize the causal DAG.
 
-        Supports three visualization modes:
-
-        1. 'schematic' (default): Collapsed view where all state variables
-           are summarized into a single "Player State" node per time step.
-           Treatment and outcome are single nodes. This produces the clean,
-           publication-ready DAG diagram. Best for presentations and papers.
-
-        2. 'detailed': Full expanded view showing every individual node
-           (each state variable, treatment, outcome) and all edges. Can be
-           very large for multi-cycle DAGs with many state variables.
-
-        3. 'single_cycle': Shows one specific cycle in detail. Requires
-           the `cycle` parameter. Useful for examining the internal
-           structure of a specific training block.
-
         Parameters
         ----------
-        mode : str, default='schematic'
-            Visualization mode: 'schematic', 'detailed', or 'single_cycle'.
-        cycle : int or None
-            For 'single_cycle' mode: which cycle to visualize (1-based).
-            For 'schematic': if provided, only show that cycle's schematic.
-            Ignored for 'detailed' mode (always shows everything).
-        figsize : tuple of (float, float) or None
-            Figure size in inches (width, height). If None, auto-computed
-            based on DAG complexity.
+        cycles : None, int, or list of int
+            TIMING -- which match cycles to include in the visualization.
+              None    : show all cycles (default).
+              int     : show only that cycle number (e.g., cycles=1).
+              list    : show those specific cycles (e.g., cycles=[1, 3]).
+        completeness : str, default='schematic'
+            COMPLETENESS -- how much structural detail to show.
+              'schematic' : all state variables at each time step are collapsed
+                            into a single "Player State" node. Clean and
+                            publication-ready.
+              'detailed'  : each state variable is shown as its own node, but
+                            grouped visually under a "Player State" bounding box
+                            to make clear they represent the same concept.
         save_path : str or None
-            If provided, save the figure to this path (supports .png, .pdf, .svg).
-        dpi : int, default=150
-            Resolution for saved figures.
+            Save figure to this path (.png, .pdf, .svg). None = don't save.
+        figsize : (float, float) or None
+            Figure size in inches. Auto-computed if None.
         title : str or None
-            Custom title. If None, auto-generated from DAG metadata.
+            Custom title. Auto-generated from DAG metadata if None.
+        dpi : int, default=150
+            Resolution for raster outputs.
         show : bool, default=True
-            Whether to call plt.show(). Set False for non-interactive use.
+            Whether to call plt.show().
 
         Returns
         -------
         matplotlib.figure.Figure
-            The generated figure object.
-
-        Raises
-        ------
-        RuntimeError
-            If no DAG has been built yet.
-        ValueError
-            If mode is invalid or cycle is out of range.
         """
         self._check_dag()
+        m = self.metadata
 
-        if mode == 'schematic':
-            fig = self._visualize_schematic(cycle=cycle, figsize=figsize, title=title)
-        elif mode == 'detailed':
-            fig = self._visualize_detailed(cycle=cycle, figsize=figsize, title=title)
-        elif mode == 'single_cycle':
-            if cycle is None:
-                raise ValueError("cycle parameter is required for 'single_cycle' mode")
-            fig = self._visualize_detailed(cycle=cycle, figsize=figsize, title=title)
+        # Resolve cycles (timing)
+        all_cycles = list(range(1, m['n_cycles'] + 1))
+        if cycles is None:
+            cycles_to_show = all_cycles
+        elif isinstance(cycles, int):
+            if cycles < 1 or cycles > m['n_cycles']:
+                raise ValueError(
+                    f"cycles={cycles} out of range [1, {m['n_cycles']}]"
+                )
+            cycles_to_show = [cycles]
         else:
-            raise ValueError(f"Unknown mode '{mode}'. Use 'schematic', 'detailed', or 'single_cycle'.")
+            for c in cycles:
+                if c < 1 or c > m['n_cycles']:
+                    raise ValueError(
+                        f"cycles value {c} out of range [1, {m['n_cycles']}]"
+                    )
+            cycles_to_show = sorted(list(cycles))
+
+        # Dispatch on completeness
+        if completeness == 'schematic':
+            fig = self._visualize_schematic(cycles_to_show, figsize=figsize, title=title)
+        elif completeness == 'detailed':
+            fig = self._visualize_detailed(cycles_to_show, figsize=figsize, title=title)
+        else:
+            raise ValueError(
+                f"Unknown completeness='{completeness}'. "
+                "Choose 'schematic' or 'detailed'."
+            )
 
         if save_path is not None:
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
             fig.savefig(save_path, dpi=dpi, bbox_inches='tight',
                         facecolor=fig.get_facecolor(), edgecolor='none')
+            print(f"     Saved: {save_path}")
 
         if show:
             plt.show()
 
         return fig
 
-    def _visualize_detailed(
+    # -------------------------------------------------------------------------
+    # Drawing helpers
+    # -------------------------------------------------------------------------
+
+    def _draw_arrow(
         self,
-        cycle: Optional[int] = None,
-        figsize: Optional[Tuple[float, float]] = None,
-        title: Optional[str] = None,
-    ) -> plt.Figure:
+        ax: plt.Axes,
+        x1: float, y1: float,
+        x2: float, y2: float,
+        relation: str,
+        connectionstyle: str = 'arc3,rad=0.0',
+        shrink_a: float = 22,
+        shrink_b: float = 22,
+    ):
+        """Draw a styled directed arrow for a given relation type."""
+        style = self._EDGE_STYLES.get(relation, {
+            'color': self._COLORS['edge'], 'style': '-', 'alpha': 0.5, 'width': 1.0
+        })
+        ax.annotate(
+            '', xy=(x2, y2), xytext=(x1, y1),
+            arrowprops=dict(
+                arrowstyle="-|>, head_width=0.22, head_length=0.18",
+                color=style['color'],
+                lw=style['width'],
+                alpha=style['alpha'],
+                connectionstyle=connectionstyle,
+                linestyle=style['style'],
+                shrinkA=shrink_a,
+                shrinkB=shrink_b,
+            ),
+            zorder=2,
+        )
+
+    def _draw_state_node(
+        self, ax: plt.Axes, x: float, y: float,
+        label: str, role: str,
+        node_w: float = 1.8, node_h: float = 0.85,
+    ):
+        """Draw an elliptical state (baseline or covariate) node."""
+        color = self._get_node_color(role)
+        ellipse = mpatches.Ellipse(
+            (x, y), node_w, node_h,
+            facecolor=color, edgecolor='white',
+            linewidth=1.8, alpha=0.95, zorder=3,
+        )
+        ax.add_patch(ellipse)
+        ax.text(x, y, label, ha='center', va='center',
+                fontsize=7.5, fontweight='bold', color='white', zorder=4,
+                linespacing=1.3)
+
+    def _draw_treatment_node(
+        self, ax: plt.Axes, x: float, y: float,
+        label: str,
+        node_w: float = 1.6, node_h: float = 0.75,
+    ):
+        """Draw a rounded-rectangle treatment node."""
+        color = self._get_node_color('treatment')
+        rect = FancyBboxPatch(
+            (x - node_w / 2, y - node_h / 2),
+            node_w, node_h,
+            boxstyle="round,pad=0.10",
+            facecolor=color, edgecolor='white',
+            linewidth=1.8, alpha=0.95, zorder=3,
+        )
+        ax.add_patch(rect)
+        ax.text(x, y, label, ha='center', va='center',
+                fontsize=7.5, fontweight='bold', color='white', zorder=4,
+                linespacing=1.3)
+
+    def _draw_outcome_node(
+        self, ax: plt.Axes, x: float, y: float,
+        label: str, radius: float = 0.72,
+    ):
+        """Draw a diamond-shaped outcome node."""
+        color = self._get_node_color('outcome')
+        diamond = mpatches.RegularPolygon(
+            (x, y), numVertices=4, radius=radius,
+            orientation=0,
+            facecolor=color, edgecolor='white',
+            linewidth=2.0, alpha=0.95, zorder=3,
+        )
+        ax.add_patch(diamond)
+        ax.text(x, y, label, ha='center', va='center',
+                fontsize=7.5, fontweight='bold', color='white', zorder=4,
+                linespacing=1.3)
+
+    def _draw_cycle_box(
+        self, ax: plt.Axes,
+        x_left: float, x_right: float,
+        y_bottom: float, y_top: float,
+        label: str,
+        pad: float = 0.75,
+    ):
+        """Draw a labelled background box for a match cycle."""
+        rect = FancyBboxPatch(
+            (x_left - pad, y_bottom - pad),
+            (x_right - x_left) + 2 * pad,
+            (y_top - y_bottom) + 2 * pad,
+            boxstyle="round,pad=0.3",
+            facecolor=self._COLORS['cycle_bg'],
+            edgecolor='#C8D4E0',
+            linewidth=0.9,
+            alpha=0.55,
+            zorder=0,
+        )
+        ax.add_patch(rect)
+        ax.text(
+            (x_left + x_right) / 2,
+            y_top + pad + 0.25,
+            label,
+            ha='center', va='bottom',
+            fontsize=9.5, fontweight='bold',
+            color=self._COLORS['text'], alpha=0.85,
+            zorder=1,
+        )
+
+    def _draw_state_group_box(
+        self, ax: plt.Axes,
+        x: float,
+        y_bottom: float,
+        y_top: float,
+        width: float,
+        role: str,
+    ):
         """
-        Detailed visualization showing every individual node and edge.
+        Draw a grouping box behind state variable nodes at a single time step.
 
-        Each state variable gets its own node. All edges from the DAG are
-        drawn with colors and styles indicating the edge relation type.
-
-        Parameters
-        ----------
-        cycle : int or None
-            If provided, only show nodes/edges from this cycle.
-        figsize : tuple or None
-            Figure size. Auto-computed if None.
-        title : str or None
-            Plot title. Auto-generated if None.
-
-        Returns
-        -------
-        matplotlib.figure.Figure
+        This box makes it visually clear that all individual covariate nodes
+        at a given time step together represent the player's state (Lt or L0).
+        Uses a light fill + colored border matching the node role color.
         """
-        G = self.dag
-        m = self.metadata
+        color = self._get_node_color(role)
+        # Light fill
+        rect_fill = FancyBboxPatch(
+            (x - width / 2, y_bottom),
+            width, y_top - y_bottom,
+            boxstyle="round,pad=0.08",
+            facecolor=color,
+            edgecolor='none',
+            alpha=0.08,
+            zorder=1,
+        )
+        ax.add_patch(rect_fill)
+        # Colored border
+        rect_border = FancyBboxPatch(
+            (x - width / 2, y_bottom),
+            width, y_top - y_bottom,
+            boxstyle="round,pad=0.08",
+            facecolor='none',
+            edgecolor=color,
+            linewidth=1.4,
+            alpha=0.45,
+            zorder=2,
+        )
+        ax.add_patch(rect_border)
 
-        # Determine which nodes to show
-        if cycle is not None:
-            n_cycles = m['n_cycles']
-            if cycle < 1 or cycle > n_cycles:
-                raise ValueError(f"cycle must be between 1 and {n_cycles}, got {cycle}")
-            nodes = self.get_nodes_in_cycle(cycle)
-            subgraph = G.subgraph(nodes)
-        else:
-            nodes = list(G.nodes())
-            subgraph = G
-
-        # Compute layout
-        pos = self._compute_layout(nodes, cycle=cycle)
-
-        # Auto figure size
-        if figsize is None:
-            n_cols = len(set(G.nodes[n].get('day', 0) for n in nodes))
-            n_rows = len(m['state_vars']) + 1  # state vars + treatment
-            if cycle is None:
-                # Multi-cycle: account for all cycles
-                total_cols = sum(length + 2 for length in m['cycle_lengths'])
-                figsize = (max(12, total_cols * 1.8), max(6, n_rows * 1.5))
-            else:
-                figsize = (max(10, (n_cols + 1) * 2.0), max(6, n_rows * 1.5))
-
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-        fig.set_facecolor(self._COLORS['background'])
-        ax.set_facecolor(self._COLORS['background'])
-
-        # --- Draw cycle background boxes ---
-        if cycle is not None:
-            cycles_to_draw = [cycle]
-        else:
-            cycles_to_draw = list(range(1, m['n_cycles'] + 1))
-
-        for k in cycles_to_draw:
-            cycle_nodes = [n for n in nodes if G.nodes[n].get('cycle') == k]
-            if not cycle_nodes:
-                continue
-            cycle_pos = [pos[n] for n in cycle_nodes if n in pos]
-            if not cycle_pos:
-                continue
-
-            xs = [p[0] for p in cycle_pos]
-            ys = [p[1] for p in cycle_pos]
-            pad = 0.8
-            rect = FancyBboxPatch(
-                (min(xs) - pad, min(ys) - pad),
-                max(xs) - min(xs) + 2 * pad,
-                max(ys) - min(ys) + 2 * pad,
-                boxstyle="round,pad=0.3",
-                facecolor=self._COLORS['cycle_bg'],
-                edgecolor='#CCCCCC',
-                linewidth=1.0,
-                alpha=0.5,
-                zorder=0,
-            )
-            ax.add_patch(rect)
-            # Cycle label
-            ax.text(
-                (min(xs) + max(xs)) / 2, max(ys) + pad + 0.3,
-                f"Cycle {k} ({m['cycle_lengths'][k-1]} days)",
-                ha='center', va='bottom', fontsize=10, fontweight='bold',
-                color=self._COLORS['text'], zorder=5,
-            )
-
-        # --- Draw edges ---
-        for u, v, data in subgraph.edges(data=True):
-            if u not in pos or v not in pos:
-                continue
-            relation = data.get('relation', 'unknown')
-            style_info = self._EDGE_STYLES.get(relation, {
-                'color': self._COLORS['edge'], 'style': '-', 'alpha': 0.3, 'width': 0.8
-            })
-            ax.annotate(
-                '', xy=pos[v], xytext=pos[u],
-                arrowprops=dict(
-                    arrowstyle='->', color=style_info['color'],
-                    lw=style_info['width'], alpha=style_info['alpha'],
-                    connectionstyle='arc3,rad=0.05',
-                    linestyle=style_info['style'],
-                ),
-                zorder=1,
-            )
-
-        # --- Draw nodes ---
-        for n in nodes:
-            if n not in pos:
-                continue
-            x, y = pos[n]
-            role = G.nodes[n].get('role', 'unknown')
-            variable = G.nodes[n].get('variable', n)
-            day = G.nodes[n].get('day', 0)
-            color = self._get_node_color(role)
-
-            # Node shape: ellipse for state/baseline, rectangle for treatment, diamond for outcome
-            if role in ('baseline', 'covariate'):
-                shape = 'ellipse'
-                node_size = 0.55
-            elif role == 'treatment':
-                shape = 'rectangle'
-                node_size = 0.55
-            else:  # outcome
-                shape = 'diamond'
-                node_size = 0.7
-
-            if shape == 'ellipse':
-                ellipse = mpatches.Ellipse(
-                    (x, y), node_size * 1.6, node_size,
-                    facecolor=color, edgecolor='white', linewidth=1.5,
-                    alpha=0.9, zorder=3,
-                )
-                ax.add_patch(ellipse)
-            elif shape == 'rectangle':
-                rect = FancyBboxPatch(
-                    (x - node_size * 0.75, y - node_size * 0.4),
-                    node_size * 1.5, node_size * 0.8,
-                    boxstyle="round,pad=0.05",
-                    facecolor=color, edgecolor='white', linewidth=1.5,
-                    alpha=0.9, zorder=3,
-                )
-                ax.add_patch(rect)
-            else:  # diamond
-                diamond = mpatches.RegularPolygon(
-                    (x, y), numVertices=4, radius=node_size * 0.6,
-                    orientation=0,
-                    facecolor=color, edgecolor='white', linewidth=2,
-                    alpha=0.9, zorder=3,
-                )
-                ax.add_patch(diamond)
-
-            # Label: shortened variable name + day indicator
-            if role == 'outcome':
-                label = variable
-            else:
-                # Shorten variable names for readability
-                short_name = variable.replace(' (z)', '').replace(' Yesterday', '')
-                if len(short_name) > 12:
-                    short_name = short_name[:11] + '.'
-                label = f"{short_name}\nt{day}"
-
-            ax.text(
-                x, y, label, ha='center', va='center',
-                fontsize=6, fontweight='bold', color='white', zorder=4,
-            )
-
-        # --- Title ---
-        if title is None:
-            if cycle is not None:
-                title = f"Causal DAG — Cycle {cycle} ({m['cycle_lengths'][cycle-1]} days)"
-            else:
-                title = f"Causal DAG — {m['n_cycles']} cycle(s), lengths {m['cycle_lengths']}"
-        ax.set_title(title, fontsize=14, fontweight='bold', color=self._COLORS['text'], pad=20)
-
-        # --- Legend ---
-        legend_elements = [
-            mpatches.Patch(facecolor=self._COLORS['baseline'], label='Baseline State'),
-            mpatches.Patch(facecolor=self._COLORS['covariate'], label='Daily State (Covariate)'),
-            mpatches.Patch(facecolor=self._COLORS['treatment'], label='Treatment'),
-            mpatches.Patch(facecolor=self._COLORS['outcome'], label='Outcome'),
-        ]
-        ax.legend(handles=legend_elements, loc='lower right', fontsize=8,
-                  framealpha=0.9, edgecolor='#CCCCCC')
-
-        ax.set_aspect('equal')
-        ax.axis('off')
-        ax.margins(0.15)
-        fig.tight_layout()
-
-        return fig
+    # -------------------------------------------------------------------------
+    # Schematic visualization (collapsed Player State)
+    # -------------------------------------------------------------------------
 
     def _visualize_schematic(
         self,
-        cycle: Optional[int] = None,
+        cycles_to_show: List[int],
         figsize: Optional[Tuple[float, float]] = None,
         title: Optional[str] = None,
     ) -> plt.Figure:
         """
-        Schematic visualization with collapsed Player State nodes.
-
-        All state variables at each time step are collapsed into a single
-        "Player State" node. This produces a clean, readable DAG suitable
-        for presentations and publications.
-
-        The visual structure per day is:
-
-            [Player State]  ──confounding──>  [Treatment]
-                 │                                │
-                 │ carry-over                      │ treatment effect
-                 v                                v
-            [Player State]  ──confounding──>  [Treatment]
-                 │          (next day)             │
-                 :                                :
-                 v                                v
-            [Player State]  ─────────────>   [Outcome]
-                 │                                │
-                 │                                │ feedback
-                 v                                v
-            (next cycle)                    [Player State] (next cycle baseline)
-
-        Parameters
-        ----------
-        cycle : int or None
-            If provided, show only that cycle's schematic.
-        figsize : tuple or None
-            Figure size. Auto-computed if None.
-        title : str or None
-            Plot title. Auto-generated if None.
-
-        Returns
-        -------
-        matplotlib.figure.Figure
+        Collapsed view: all state variables at each time step summarized into
+        one 'Player State' node. Treatment and outcome are single nodes.
+        Produces the clean, communication-ready diagram for papers/presentations.
         """
         m = self.metadata
 
-        # Determine cycles to draw
-        if cycle is not None:
-            n_cycles = m['n_cycles']
-            if cycle < 1 or cycle > n_cycles:
-                raise ValueError(f"cycle must be between 1 and {n_cycles}, got {cycle}")
-            cycles = [cycle]
-        else:
-            cycles = list(range(1, m['n_cycles'] + 1))
+        # Adaptive layout constants
+        total_slots = sum(m['cycle_lengths'][k - 1] + 2 for k in cycles_to_show)
+        n_gaps = max(0, len(cycles_to_show) - 1)
+        _fig_w_target = min(28.0, max(11.0, total_slots * 1.9))
+        _fig_h_target = 7.0
+        _data_y_range = 4.8
+        _data_x_target = (_fig_w_target / _fig_h_target) * _data_y_range
+        _denom = total_slots + n_gaps * 0.8
+        X_STEP = max(1.5, min(2.8, _data_x_target / max(1, _denom)))
+        Y_STATE = 1.8
+        Y_TREAT = -1.3
+        Y_OUTCOME = 0.25
+        CYCLE_GAP = max(1.8, X_STEP * 0.85)
+        _ns = X_STEP / 2.8
+        NODE_W_STATE = max(0.9, 1.80 * _ns)
+        NODE_H_STATE = 0.82
+        NODE_W_TREAT = max(0.8, 1.55 * _ns)
+        NODE_H_TREAT = 0.72
+        OUTCOME_R = 0.72
+        _state_lbl = 'Player\nState' if X_STEP >= 2.0 else 'State'
+        _treat_lbl = 'Training\nIntensity' if X_STEP >= 2.0 else 'Intensity'
 
-        # Calculate layout dimensions
-        total_days = sum(m['cycle_lengths'][k-1] + 2 for k in cycles)  # +2 for baseline + outcome
+        # First pass: compute all node positions
+        baseline_pos: Dict[int, Tuple[float, float]] = {}
+        outcome_pos:  Dict[int, Tuple[float, float]] = {}
+        state_pos:    Dict[Tuple[int, int], Tuple[float, float]] = {}
+        treat_pos:    Dict[Tuple[int, int], Tuple[float, float]] = {}
+        cycle_extents: Dict[int, Tuple[float, float]] = {}
+
+        x_cursor = 0.0
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            x_left = x_cursor
+
+            bx = x_cursor
+            baseline_pos[k] = (bx, Y_STATE)
+            x_cursor += X_STEP
+
+            for d in range(1, n_days + 1):
+                dx = x_cursor
+                state_pos[(k, d)] = (dx, Y_STATE)
+                treat_pos[(k, d)] = (dx, Y_TREAT)
+                x_cursor += X_STEP
+
+            ox = x_cursor
+            outcome_pos[k] = (ox, Y_OUTCOME)
+            cycle_extents[k] = (x_left, ox)
+            x_cursor = ox + CYCLE_GAP
+
+        # Figure setup
         if figsize is None:
-            width = max(14, total_days * 1.6)
-            height = max(5, 6 + (1 if len(cycles) > 1 else 0))
-            figsize = (width, height)
+            figsize = (_fig_w_target, _fig_h_target)
 
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-        fig.set_facecolor(self._COLORS['background'])
+        fig, ax = plt.subplots(figsize=figsize)
+        fig.patch.set_facecolor(self._COLORS['background'])
         ax.set_facecolor(self._COLORS['background'])
 
-        # --- Build schematic nodes and edges ---
-        x_offset = 0
-        x_spacing = 2.2
-        y_state = 1.5      # y for Player State row
-        y_treatment = -1.5  # y for Treatment row
+        # Cycle background boxes
+        for k in cycles_to_show:
+            x_left, x_right = cycle_extents[k]
+            n_days = m['cycle_lengths'][k - 1]
+            label = f"Cycle {k}   \u00b7   {n_days} training day{'s' if n_days != 1 else ''}"
+            self._draw_cycle_box(ax, x_left, x_right, Y_TREAT, Y_STATE, label, pad=0.75)
 
-        # Track positions for drawing
-        schematic_nodes = []   # (x, y, label, role, cycle_k)
-        schematic_edges = []   # (x1, y1, x2, y2, relation)
+        # Edges
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            bx, _ = baseline_pos[k]
 
-        for k in cycles:
-            n_days = m['cycle_lengths'][k-1]
-            cycle_x_start = x_offset
+            for d in range(1, n_days + 1):
+                sx, sy = state_pos[(k, d)]
+                tx, ty = treat_pos[(k, d)]
 
-            # --- Baseline node (t0) ---
-            bx = x_offset
-            schematic_nodes.append((bx, y_state, 'Player\nState', 'baseline', k, 't₀'))
+                # State carryover: prev_state -> current_state
+                if d == 1:
+                    prev_sx, prev_sy = baseline_pos[k]
+                else:
+                    prev_sx, prev_sy = state_pos[(k, d - 1)]
+                self._draw_arrow(ax, prev_sx, prev_sy, sx, sy,
+                                 'state_carryover', 'arc3,rad=0.0',
+                                 shrink_a=26, shrink_b=26)
 
-            # --- Daily nodes (t1 .. tN) ---
-            for day in range(1, n_days + 1):
-                dx = x_offset + day * x_spacing
+                # Confounding: state -> treatment
+                self._draw_arrow(ax, sx, sy, tx, ty,
+                                 'confounding', 'arc3,rad=0.0',
+                                 shrink_a=24, shrink_b=22)
 
-                # State node
-                schematic_nodes.append((dx, y_state, 'Player\nState', 'covariate', k, f't{day}'))
+                # Treatment effect: treatment -> next state
+                if d < n_days:
+                    next_sx, next_sy = state_pos[(k, d + 1)]
+                    self._draw_arrow(ax, tx, ty, next_sx, next_sy,
+                                     'treatment_effect', 'arc3,rad=-0.3',
+                                     shrink_a=22, shrink_b=26)
 
-                # Treatment node
-                schematic_nodes.append((dx, y_treatment, 'Treatment', 'treatment', k, f't{day}'))
+            # Outcome edges (from final day)
+            ox, oy = outcome_pos[k]
+            final_sx, final_sy = state_pos[(k, n_days)]
+            final_tx, final_ty = treat_pos[(k, n_days)]
+            self._draw_arrow(ax, final_sx, final_sy, ox, oy,
+                             'covariate_to_outcome', 'arc3,rad=0.2',
+                             shrink_a=26, shrink_b=30)
+            self._draw_arrow(ax, final_tx, final_ty, ox, oy,
+                             'treatment_to_outcome', 'arc3,rad=-0.2',
+                             shrink_a=22, shrink_b=30)
 
-                # Edge: state → treatment (confounding)
-                schematic_edges.append((dx, y_state, dx, y_treatment, 'confounding'))
+        # Inter-cycle feedback
+        show_indices = {k: i for i, k in enumerate(cycles_to_show)}
+        for idx, k in enumerate(cycles_to_show[:-1]):
+            next_k = cycles_to_show[idx + 1]
+            ox, oy = outcome_pos[k]
+            nbx, nby = baseline_pos[next_k]
+            self._draw_arrow(ax, ox, oy, nbx, nby,
+                             'outcome_to_baseline', 'arc3,rad=-0.55',
+                             shrink_a=30, shrink_b=24)
 
-                # Edge: previous state → current state (carry-over)
-                prev_x = x_offset + (day - 1) * x_spacing
-                schematic_edges.append((prev_x, y_state, dx, y_state, 'state_carryover'))
+        # Nodes
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            bx, by = baseline_pos[k]
 
-                # Edge: previous treatment → current state (treatment effect)
-                if day > 1:
-                    prev_tx = x_offset + (day - 1) * x_spacing
-                    schematic_edges.append((prev_tx, y_treatment, dx, y_state, 'treatment_effect'))
+            # Baseline node (L0)
+            self._draw_state_node(ax, bx, by, 'Baseline\nState',
+                                  'baseline', NODE_W_STATE, NODE_H_STATE)
+            ax.text(bx, by - NODE_H_STATE / 2 - 0.18, 'L\u2080',
+                    ha='center', va='top', fontsize=8, fontstyle='italic',
+                    color=self._COLORS['text'], alpha=0.75, zorder=5)
 
-                # Edge: baseline → day 1 state (already covered by carry-over above for day=1)
-                # The baseline→covariate is the carry-over from t0 to t1
+            for d in range(1, n_days + 1):
+                sx, sy = state_pos[(k, d)]
+                tx, ty = treat_pos[(k, d)]
 
-            # --- Outcome node ---
-            ox = x_offset + (n_days + 1) * x_spacing
-            schematic_nodes.append((ox, 0, 'Match\nOutcome', 'outcome', k, ''))
+                self._draw_state_node(ax, sx, sy, _state_lbl,
+                                      'covariate', NODE_W_STATE, NODE_H_STATE)
+                ax.text(sx, sy - NODE_H_STATE / 2 - 0.18, f'L\u209c',
+                        ha='center', va='top', fontsize=8, fontstyle='italic',
+                        color=self._COLORS['text'], alpha=0.75, zorder=5)
 
-            # Edges: final state → outcome
-            final_sx = x_offset + n_days * x_spacing
-            schematic_edges.append((final_sx, y_state, ox, 0, 'covariate_to_outcome'))
+                self._draw_treatment_node(ax, tx, ty, _treat_lbl,
+                                          NODE_W_TREAT, NODE_H_TREAT)
+                ax.text(tx, ty - NODE_H_TREAT / 2 - 0.18, f'A\u209c',
+                        ha='center', va='top', fontsize=8, fontstyle='italic',
+                        color=self._COLORS['text'], alpha=0.75, zorder=5)
 
-            # Edges: final treatment → outcome
-            schematic_edges.append((final_sx, y_treatment, ox, 0, 'treatment_to_outcome'))
+            ox, oy = outcome_pos[k]
+            self._draw_outcome_node(ax, ox, oy, 'Match\nPerformance', OUTCOME_R)
+            ax.text(ox, oy - OUTCOME_R - 0.22, f'Y\u2096',
+                    ha='center', va='top', fontsize=8, fontstyle='italic',
+                    color=self._COLORS['text'], alpha=0.75, zorder=5)
 
-            # --- Feedback to next cycle ---
-            next_cycle_idx = cycles.index(k) + 1
-            if next_cycle_idx < len(cycles):
-                next_k = cycles[next_cycle_idx]
-                next_x_offset = ox + x_spacing * 1.5
-                # This feedback edge will be drawn after we know the next baseline position
-                schematic_edges.append((ox, 0, next_x_offset, y_state, 'outcome_to_baseline'))
-
-            # Update x_offset for next cycle
-            x_offset = ox + x_spacing * 1.5
-
-        # --- Draw cycle background boxes ---
-        # Recalculate positions for backgrounds
-        x_cursor = 0
-        for idx, k in enumerate(cycles):
-            n_days = m['cycle_lengths'][k-1]
-            cycle_width = (n_days + 2) * x_spacing
-            pad = 0.9
-
-            rect = FancyBboxPatch(
-                (x_cursor - pad, y_treatment - pad - 0.3),
-                cycle_width - x_spacing * 0.3 + 2 * pad,
-                (y_state - y_treatment) + 2 * pad + 0.6,
-                boxstyle="round,pad=0.4",
-                facecolor=self._COLORS['cycle_bg'],
-                edgecolor='#BBBBBB',
-                linewidth=1.0,
-                alpha=0.4,
-                zorder=0,
-            )
-            ax.add_patch(rect)
-
-            # Cycle label at top
-            cx = x_cursor + (cycle_width - x_spacing * 0.3) / 2
-            ax.text(
-                cx, y_state + pad + 0.7,
-                f"Cycle {k}  ({n_days} training days)",
-                ha='center', va='bottom', fontsize=11, fontweight='bold',
-                color=self._COLORS['text'], zorder=5,
-            )
-
-            x_cursor += (n_days + 2) * x_spacing + x_spacing * 0.5
-
-        # --- Draw edges ---
-        for x1, y1, x2, y2, relation in schematic_edges:
-            style_info = self._EDGE_STYLES.get(relation, {
-                'color': self._COLORS['edge'], 'style': '-', 'alpha': 0.3, 'width': 0.8
-            })
-
-            # Curve radius depends on edge direction
-            if abs(y2 - y1) > 0.5 and abs(x2 - x1) > 0.5:
-                conn = 'arc3,rad=0.15'
-            elif relation == 'outcome_to_baseline':
-                conn = 'arc3,rad=-0.3'
-            else:
-                conn = 'arc3,rad=0.0'
-
-            ax.annotate(
-                '', xy=(x2, y2), xytext=(x1, y1),
-                arrowprops=dict(
-                    arrowstyle='->', color=style_info['color'],
-                    lw=style_info['width'], alpha=style_info['alpha'],
-                    connectionstyle=conn,
-                    linestyle=style_info['style'],
-                    shrinkA=18, shrinkB=18,
-                ),
-                zorder=1,
-            )
-
-        # --- Draw nodes ---
-        for x, y, label, role, k, time_label in schematic_nodes:
-            color = self._get_node_color(role)
-
-            if role in ('baseline', 'covariate'):
-                # Ellipse for Player State
-                node_w, node_h = 1.6, 0.9
-                ellipse = mpatches.Ellipse(
-                    (x, y), node_w, node_h,
-                    facecolor=color, edgecolor='white', linewidth=2,
-                    alpha=0.92, zorder=3,
-                )
-                ax.add_patch(ellipse)
-            elif role == 'treatment':
-                # Rounded rectangle for Treatment
-                node_w, node_h = 1.4, 0.7
-                rect = FancyBboxPatch(
-                    (x - node_w / 2, y - node_h / 2),
-                    node_w, node_h,
-                    boxstyle="round,pad=0.08",
-                    facecolor=color, edgecolor='white', linewidth=2,
-                    alpha=0.92, zorder=3,
-                )
-                ax.add_patch(rect)
-            else:  # outcome
-                # Diamond for Outcome
-                diamond = mpatches.RegularPolygon(
-                    (x, y), numVertices=4, radius=0.65,
-                    orientation=0,
-                    facecolor=color, edgecolor='white', linewidth=2.5,
-                    alpha=0.92, zorder=3,
-                )
-                ax.add_patch(diamond)
-
-            # Node text
-            ax.text(
-                x, y, label, ha='center', va='center',
-                fontsize=7.5, fontweight='bold', color='white', zorder=4,
-            )
-
-            # Time subscript below node
-            if time_label:
-                sub_y = y - (0.55 if role != 'treatment' else 0.48)
-                ax.text(
-                    x, sub_y, time_label, ha='center', va='top',
-                    fontsize=7, fontstyle='italic', color=self._COLORS['text'],
-                    alpha=0.7, zorder=5,
-                )
-
-        # --- Title ---
+        # Title
         if title is None:
-            state_names = ', '.join(m['state_vars'])
-            if len(state_names) > 60:
-                state_names = state_names[:57] + '...'
-            if cycle is not None:
-                title = f"Causal DAG (Schematic) — Cycle {cycle}"
+            state_str = ', '.join(m['state_vars'])
+            if len(state_str) > 70:
+                state_str = state_str[:67] + '\u2026'
+            if len(cycles_to_show) == 1:
+                subtitle = f"Cycle {cycles_to_show[0]}  \u00b7  {m['cycle_lengths'][cycles_to_show[0]-1]} training days"
             else:
-                title = f"Causal DAG (Schematic) — {m['n_cycles']} cycle(s)"
-            title += f"\nState = [{state_names}] | Treatment = {m['daily_treatment_var']} | Outcome = {m['outcome_var']}"
+                lengths = [m['cycle_lengths'][k - 1] for k in cycles_to_show]
+                subtitle = f"{len(cycles_to_show)} cycle(s)  \u00b7  lengths {lengths}"
+            title = (
+                f"Causal DAG \u2014 Player {m['player_id']}  \u00b7  {subtitle}\n"
+                f"State: [{state_str}]   |   Treatment: {m['daily_treatment_var']}   |   "
+                f"Outcome: {m['outcome_var']}"
+            )
+        ax.set_title(title, fontsize=10, fontweight='bold',
+                     color=self._COLORS['text'], pad=22, linespacing=1.5)
 
-        ax.set_title(title, fontsize=12, fontweight='bold', color=self._COLORS['text'], pad=25)
-
-        # --- Legend ---
-        legend_elements = [
-            mpatches.Patch(facecolor=self._COLORS['baseline'], label='Baseline (t₀)', edgecolor='white'),
-            mpatches.Patch(facecolor=self._COLORS['covariate'], label='Player State', edgecolor='white'),
-            mpatches.Patch(facecolor=self._COLORS['treatment'], label='Treatment', edgecolor='white'),
-            mpatches.Patch(facecolor=self._COLORS['outcome'], label='Match Outcome', edgecolor='white'),
-        ]
-        # Add edge types to legend
+        # Legend
         from matplotlib.lines import Line2D
-        legend_elements.extend([
+        legend_handles = [
+            mpatches.Patch(facecolor=self._COLORS['baseline'], edgecolor='white',
+                           label='Baseline state (L\u2080)'),
+            mpatches.Patch(facecolor=self._COLORS['covariate'], edgecolor='white',
+                           label='Time-varying state (L\u209c)'),
+            mpatches.Patch(facecolor=self._COLORS['treatment'], edgecolor='white',
+                           label='Treatment \u2014 Training Intensity (A\u209c \u2208 [0,1])'),
+            mpatches.Patch(facecolor=self._COLORS['outcome'], edgecolor='white',
+                           label='Match outcome (Y)'),
             Line2D([0], [0], color=self._EDGE_STYLES['state_carryover']['color'],
-                   linewidth=1.5, label='State carry-over'),
+                   lw=1.6, label='State carry-over (L\u209c \u2192 L\u209c\u208a\u2081)'),
             Line2D([0], [0], color=self._EDGE_STYLES['confounding']['color'],
-                   linewidth=1.5, linestyle='--', label='Confounding (state→treatment)'),
+                   lw=1.6, linestyle='--', label='Confounding (L\u209c \u2192 A\u209c)'),
             Line2D([0], [0], color=self._EDGE_STYLES['treatment_effect']['color'],
-                   linewidth=1.5, label='Treatment effect'),
-        ])
-        if len(cycles) > 1:
-            legend_elements.append(
+                   lw=1.8, label='Treatment effect (A\u209c \u2192 L\u209c\u208a\u2081)'),
+        ]
+        if len(cycles_to_show) > 1:
+            legend_handles.append(
                 Line2D([0], [0], color=self._EDGE_STYLES['outcome_to_baseline']['color'],
-                       linewidth=2, label='Inter-cycle feedback')
+                       lw=2.2, label='Inter-cycle feedback (Y\u2096 \u2192 L\u2080\u2096\u208a\u2081)')
             )
 
         ax.legend(
-            handles=legend_elements, loc='lower right', fontsize=7.5,
-            framealpha=0.9, edgecolor='#CCCCCC', ncol=2,
+            handles=legend_handles,
+            loc='lower right',
+            fontsize=7.5,
+            framealpha=0.92,
+            edgecolor='#C0CCD8',
+            fancybox=True,
+            ncol=2,
+            columnspacing=1.0,
         )
 
-        ax.set_aspect('equal')
         ax.axis('off')
-        ax.margins(0.08)
-        fig.tight_layout()
-
+        ax.margins(0.10)
+        fig.tight_layout(pad=2.0)
         return fig
 
-    def visualize_cycle(
+    # -------------------------------------------------------------------------
+    # Detailed visualization (individual variable nodes + grouping boxes)
+    # -------------------------------------------------------------------------
+
+    def _visualize_detailed(
         self,
-        cycle: int,
+        cycles_to_show: List[int],
         figsize: Optional[Tuple[float, float]] = None,
-        save_path: Optional[str] = None,
-        dpi: int = 150,
         title: Optional[str] = None,
-        show: bool = True,
     ) -> plt.Figure:
         """
-        Convenience method: visualize a single cycle in schematic mode.
+        Detailed view: each state variable is a separate node.
 
-        Equivalent to visualize(mode='schematic', cycle=cycle).
+        State variable nodes at each time step are grouped inside a labelled
+        bounding box to make visually clear that they collectively represent
+        the player's state (Lt or L0). Treatment and outcome are single nodes.
 
-        Parameters
-        ----------
-        cycle : int
-            Cycle index (1-based).
-        figsize : tuple or None
-            Figure size.
-        save_path : str or None
-            Path to save the figure.
-        dpi : int
-            Resolution for saved figures.
-        title : str or None
-            Custom title.
-        show : bool
-            Whether to display the figure.
-
-        Returns
-        -------
-        matplotlib.figure.Figure
+        cross_var_carryover=True produces N^2 carryover arrows per step.
+        cross_var_carryover=False produces N self-only arrows (cleaner).
         """
-        return self.visualize(
-            mode='schematic', cycle=cycle, figsize=figsize,
-            save_path=save_path, dpi=dpi, title=title, show=show,
-        )
+        m = self.metadata
+        G = self.dag
+        n_state = len(m['state_vars'])
 
-    # =====================================================================
+        # Adaptive layout constants
+        total_slots = sum(m['cycle_lengths'][k - 1] + 2 for k in cycles_to_show)
+        n_gaps = max(0, len(cycles_to_show) - 1)
+        _fig_w_target = min(36.0, max(14.0, total_slots * 2.4))
+        _fig_h_target = max(8.0, n_state * 1.6 + 4.5)
+        _data_y_range = n_state * 1.4 + 3.5
+        _data_x_target = (_fig_w_target / _fig_h_target) * _data_y_range
+        _denom = total_slots + n_gaps * 0.8
+        X_STEP = max(1.8, min(3.5, _data_x_target / max(1, _denom)))
+
+        Y_SPACING = 1.3       # Vertical spacing between state vars within a group
+        Y_STATE_TOP = (n_state - 1) * Y_SPACING / 2.0   # y of the topmost state node
+        Y_TREAT = -Y_STATE_TOP - 2.0    # treatment node is below the state group
+        CYCLE_GAP = max(2.2, X_STEP * 0.9)
+
+        NODE_W = max(1.0, 1.6 * X_STEP / 3.5)
+        NODE_H = 0.70
+        TREAT_W = max(0.9, 1.4 * X_STEP / 3.5)
+        TREAT_H = 0.62
+        OUTCOME_R = 0.72
+
+        GROUP_PAD_X = 0.30   # Padding around the state group box (x)
+        GROUP_PAD_Y = 0.32   # Padding around the state group box (y)
+
+        # Build unified position dict: node_name -> (x, y)
+        pos: Dict[str, Tuple[float, float]] = {}
+        cycle_extents: Dict[int, Tuple[float, float, float, float]] = {}  # (xl, xr, yb, yt)
+
+        x_cursor = 0.0
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            x_left = x_cursor
+
+            # Baseline (t=0)
+            bx = x_cursor
+            for i, var in enumerate(m['state_vars']):
+                node = self._node_name(var, k, 0)
+                pos[node] = (bx, Y_STATE_TOP - i * Y_SPACING)
+            x_cursor += X_STEP
+
+            # Training days (t=1..N)
+            for d in range(1, n_days + 1):
+                dx = x_cursor
+                for i, var in enumerate(m['state_vars']):
+                    node = self._node_name(var, k, d)
+                    pos[node] = (dx, Y_STATE_TOP - i * Y_SPACING)
+                treat_node = self._node_name(m['daily_treatment_var'], k, d)
+                pos[treat_node] = (dx, Y_TREAT)
+                x_cursor += X_STEP
+
+            # Outcome
+            ox = x_cursor
+            outcome_node = self._outcome_node_name(m['outcome_var'], k)
+            pos[outcome_node] = (ox, (Y_STATE_TOP + Y_TREAT) / 2)
+
+            # Cycle extents for background box
+            cycle_extents[k] = (
+                x_left,
+                ox,
+                Y_TREAT - TREAT_H / 2 - GROUP_PAD_Y - 0.5,
+                Y_STATE_TOP + NODE_H / 2 + GROUP_PAD_Y + 1.0
+            )
+            x_cursor = ox + CYCLE_GAP
+
+        # Figure
+        if figsize is None:
+            figsize = (_fig_w_target, _fig_h_target)
+
+        fig, ax = plt.subplots(figsize=figsize)
+        fig.patch.set_facecolor(self._COLORS['background'])
+        ax.set_facecolor(self._COLORS['background'])
+
+        # --- Cycle background boxes ---
+        for k in cycles_to_show:
+            x_left, x_right, y_bot, y_top = cycle_extents[k]
+            n_days = m['cycle_lengths'][k - 1]
+            self._draw_cycle_box(ax, x_left, x_right, y_bot, y_top,
+                                 f"Cycle {k}  \u00b7  {n_days} training day{'s' if n_days != 1 else ''}",
+                                 pad=0.5)
+
+        # --- State group boxes (one per time step) ---
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            for d in range(0, n_days + 1):
+                state_nodes_at_d = [
+                    self._node_name(var, k, d) for var in m['state_vars']
+                ]
+                x = pos[state_nodes_at_d[0]][0]
+                ys = [pos[n][1] for n in state_nodes_at_d]
+                y_top_box  = max(ys) + NODE_H / 2 + GROUP_PAD_Y
+                y_bot_box  = min(ys) - NODE_H / 2 - GROUP_PAD_Y
+                box_width  = NODE_W + 2 * GROUP_PAD_X
+                role = 'baseline' if d == 0 else 'covariate'
+                self._draw_state_group_box(ax, x, y_bot_box, y_top_box, box_width, role)
+
+                # Label below each group box: L0, L1, L2, ...
+                lbl = f'L\u2080' if d == 0 else f'L\u209c'
+                ax.text(x, y_bot_box - 0.15, lbl,
+                        ha='center', va='top', fontsize=8, fontstyle='italic',
+                        color=self._get_node_color(role), alpha=0.85, zorder=5)
+
+                # "Player State" / "Baseline State" caption above the group box
+                cap = 'Baseline\nState' if d == 0 else 'Player\nState'
+                ax.text(x, y_top_box + 0.10, cap,
+                        ha='center', va='bottom', fontsize=6.5,
+                        color=self._get_node_color(role), alpha=0.60, zorder=5,
+                        linespacing=1.2)
+
+        # --- Edges ---
+        shown_nodes = set(pos.keys())
+        for u, v, data in G.edges(data=True):
+            if u not in shown_nodes or v not in shown_nodes:
+                continue
+            # Only draw edges involving cycles we are showing
+            u_cycle = G.nodes[u].get('cycle')
+            v_cycle = G.nodes[v].get('cycle')
+            if u_cycle not in cycles_to_show and v_cycle not in cycles_to_show:
+                continue
+
+            relation = data.get('relation', 'unknown')
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            # Choose connection style
+            if relation == 'outcome_to_baseline':
+                conn = 'arc3,rad=-0.5'
+            elif relation == 'confounding':
+                conn = 'arc3,rad=0.0'
+            elif relation == 'treatment_effect':
+                conn = 'arc3,rad=-0.25'
+            elif relation == 'state_carryover':
+                # For cross-variable carryover: add slight curve based on var indices
+                u_var = G.nodes[u].get('variable', '')
+                v_var = G.nodes[v].get('variable', '')
+                u_idx = m['state_vars'].index(u_var) if u_var in m['state_vars'] else 0
+                v_idx = m['state_vars'].index(v_var) if v_var in m['state_vars'] else 0
+                diff = v_idx - u_idx
+                rad = 0.0 + diff * 0.15   # Same var: flat; cross-var: slight arc
+                conn = f'arc3,rad={rad:.2f}'
+            else:
+                conn = 'arc3,rad=0.10'
+
+            self._draw_arrow(ax, x1, y1, x2, y2, relation, conn,
+                             shrink_a=16, shrink_b=16)
+
+        # --- Nodes ---
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+
+            for d in range(0, n_days + 1):
+                role = 'baseline' if d == 0 else 'covariate'
+                for i, var in enumerate(m['state_vars']):
+                    node = self._node_name(var, k, d)
+                    if node not in pos:
+                        continue
+                    x, y = pos[node]
+                    short = var.replace(' (z)', '').replace(' Yesterday', '')
+                    if len(short) > 12:
+                        short = short[:11] + '\u2026'
+                    self._draw_state_node(ax, x, y, short, role, NODE_W, NODE_H)
+
+                # Treatment node (not at baseline t=0)
+                if d > 0:
+                    treat_node = self._node_name(m['daily_treatment_var'], k, d)
+                    if treat_node in pos:
+                        tx, ty = pos[treat_node]
+                        treat_short = m['daily_treatment_var']
+                        if len(treat_short) > 12:
+                            treat_short = treat_short[:11] + '\u2026'
+                        self._draw_treatment_node(ax, tx, ty, treat_short, TREAT_W, TREAT_H)
+                        ax.text(tx, ty - TREAT_H / 2 - 0.12, f'A{d}',
+                                ha='center', va='top', fontsize=7, fontstyle='italic',
+                                color=self._COLORS['text'], alpha=0.75, zorder=5)
+
+            # Outcome node
+            outcome_node = self._outcome_node_name(m['outcome_var'], k)
+            if outcome_node in pos:
+                ox, oy = pos[outcome_node]
+                out_short = m['outcome_var']
+                if len(out_short) > 12:
+                    out_short = out_short[:11] + '\u2026'
+                self._draw_outcome_node(ax, ox, oy, out_short, OUTCOME_R)
+                ax.text(ox, oy - OUTCOME_R - 0.18, f'Y{k}',
+                        ha='center', va='top', fontsize=8, fontstyle='italic',
+                        color=self._COLORS['text'], alpha=0.75, zorder=5)
+
+        # --- Title ---
+        if title is None:
+            cross_note = "(ALL-to-ALL carryover)" if m['cross_var_carryover'] else "(self-only carryover)"
+            if len(cycles_to_show) == 1:
+                k = cycles_to_show[0]
+                subtitle = f"Cycle {k}  \u00b7  {m['cycle_lengths'][k-1]} training days"
+            else:
+                lengths = [m['cycle_lengths'][k - 1] for k in cycles_to_show]
+                subtitle = f"{len(cycles_to_show)} cycle(s)  \u00b7  lengths {lengths}"
+            title = (
+                f"Causal DAG (Detailed) \u2014 Player {m['player_id']}  \u00b7  "
+                f"{subtitle}  {cross_note}\n"
+                f"State: {m['state_vars']}   |   Treatment: {m['daily_treatment_var']}"
+            )
+        ax.set_title(title, fontsize=9, fontweight='bold',
+                     color=self._COLORS['text'], pad=20, linespacing=1.4)
+
+        # --- Legend ---
+        from matplotlib.lines import Line2D
+        legend_handles = [
+            mpatches.Patch(facecolor=self._COLORS['baseline'], edgecolor='white',
+                           label='Baseline state (L\u2080)'),
+            mpatches.Patch(facecolor=self._COLORS['covariate'], edgecolor='white',
+                           label='Daily state (L\u209c)'),
+            mpatches.Patch(facecolor=self._COLORS['treatment'], edgecolor='white',
+                           label='Treatment (A\u209c)'),
+            mpatches.Patch(facecolor=self._COLORS['outcome'], edgecolor='white',
+                           label='Match outcome (Y)'),
+            Line2D([0], [0], color=self._EDGE_STYLES['state_carryover']['color'],
+                   lw=1.4, label='State carry-over'),
+            Line2D([0], [0], color=self._EDGE_STYLES['confounding']['color'],
+                   lw=1.4, linestyle='--', label='Confounding (L\u209c \u2192 A\u209c)'),
+            Line2D([0], [0], color=self._EDGE_STYLES['treatment_effect']['color'],
+                   lw=1.8, label='Treatment effect (A\u209c \u2192 L\u209c\u208a\u2081)'),
+        ]
+        ax.legend(handles=legend_handles, loc='lower right', fontsize=7.5,
+                  framealpha=0.92, edgecolor='#C0CCD8', fancybox=True, ncol=2)
+
+        ax.axis('off')
+        ax.margins(0.10)
+        fig.tight_layout(pad=2.0)
+        return fig
+
+    # =========================================================================
     # SUMMARY & DISPLAY
-    # =====================================================================
+    # =========================================================================
 
     def summary(self) -> str:
-        """
-        Return a human-readable summary of the DAG structure.
-
-        Returns
-        -------
-        str
-            Multi-line summary string.
-        """
+        """Return a human-readable summary of the DAG structure."""
         if self.dag is None or self.metadata is None:
-            return "No DAG built yet. Call build_dag() first."
+            return "No DAG built."
 
         m = self.metadata
+        carryover = "ALL-to-ALL" if m['cross_var_carryover'] else "self-only"
         lines = [
-            "=" * 65,
-            "DAG Summary: Longitudinal Causal Graph",
-            "=" * 65,
+            "=" * 70,
+            "  DAG Summary: Longitudinal Causal Graph (DTR Framework)",
+            "=" * 70,
+            f"  Player ID:         {m['player_id']}",
             f"  Cycles:            {m['n_cycles']} (lengths: {m['cycle_lengths']})",
-            f"  State variables:   {len(m['state_vars'])} ({', '.join(m['state_vars'])})",
-            f"  Daily treatment:   {m['daily_treatment_var']}",
-            f"  Outcome:           {m['outcome_var']}",
-            "-" * 65,
+            f"  State vars (Lt):   {len(m['state_vars'])} -- {', '.join(m['state_vars'])}",
+            f"  Treatment (At):    {m['daily_treatment_var']}",
+            f"  Outcome (Y):       {m['outcome_var']}",
+            f"  Carryover type:    {carryover}",
+            "-" * 70,
         ]
 
-        # Per-cycle details
         for info in m['per_cycle']:
             k = info['cycle']
             n = info['n_days']
             total = (info['n_baseline_nodes'] + info['n_covariate_nodes']
                      + info['n_treatment_nodes'] + info['n_outcome_nodes'])
             lines.append(
-                f"  Cycle {k} ({n} days): "
+                f"  Cycle {k} ({n:>2d} days):  "
                 f"{info['n_baseline_nodes']} baseline | "
-                f"{info['n_covariate_nodes']} covariate | "
-                f"{info['n_treatment_nodes']} treatment | "
-                f"{info['n_outcome_nodes']} outcome  "
-                f"= {total} nodes"
+                f"{info['n_covariate_nodes']:>3d} covariate | "
+                f"{info['n_treatment_nodes']:>2d} treatment | "
+                f"1 outcome  =  {total} nodes"
             )
 
-        lines.append("-" * 65)
+        lines.append("-" * 70)
         lines.append(f"  Total nodes:       {m['n_nodes']}")
         lines.append(f"  Total edges:       {m['n_edges']}")
 
-        # Edge type counts
-        relation_counts = {}
+        relation_counts: Dict[str, int] = {}
         for _, _, attrs in self.dag.edges(data=True):
             rel = attrs.get('relation', 'unknown')
             relation_counts[rel] = relation_counts.get(rel, 0) + 1
 
-        lines.append("  Edge types:")
+        lines.append("  Edge breakdown:")
         for rel, count in sorted(relation_counts.items()):
-            lines.append(f"    - {rel}: {count}")
+            lines.append(f"    {rel:<28s} {count:>4d}")
 
         if m['n_feedback_edges'] > 0:
             lines.append(
-                f"  Feedback links:    {m['n_cycles'] - 1} inter-cycle "
-                f"connections ({m['n_feedback_edges']} edges)"
+                f"  Inter-cycle feedback:  {m['n_cycles'] - 1} connection(s), "
+                f"{m['n_feedback_edges']} edge(s)"
             )
 
-        lines.append("=" * 65)
+        tvc = self.get_time_varying_confounders()
+        if tvc:
+            lines.append(f"  Time-varying confounders: {len(tvc)} nodes")
+            lines.append("    (nodes that are both effects of A(t-1) and causes of A(t)")
+            lines.append("     require G-methods for unbiased causal estimation)")
+
+        lines.append("=" * 70)
         return "\n".join(lines)
 
     def __repr__(self) -> str:
@@ -1468,178 +1469,125 @@ class DAGCreator:
             return "DAGCreator(no DAG built)"
         m = self.metadata
         return (
-            f"DAGCreator(cycles={m['n_cycles']}, "
+            f"DAGCreator("
+            f"player={m['player_id']}, "
+            f"cycles={m['n_cycles']}, "
             f"lengths={m['cycle_lengths']}, "
-            f"nodes={m['n_nodes']}, edges={m['n_edges']})"
+            f"state_vars={len(m['state_vars'])}, "
+            f"nodes={m['n_nodes']}, "
+            f"edges={m['n_edges']}, "
+            f"cross_carryover={m['cross_var_carryover']}"
+            f")"
         )
 
 
-# =========================================================================
-# STANDALONE EXECUTION — DEMONSTRATION
-# =========================================================================
+# =============================================================================
+# STANDALONE EXECUTION -- DEMONSTRATION
+# =============================================================================
 
 if __name__ == "__main__":
-    creator = DAGCreator()
+    import sys
+    from pathlib import Path as _Path
 
-    # Determine output directory for saved figures
-    script_dir = Path(__file__).parent
+    script_dir = _Path(__file__).parent
     project_root = script_dir.parent.parent
     results_dir = project_root / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    # -----------------------------------------------------------------
-    # Demo 1: Single cycle (5 days) — text summary
-    # -----------------------------------------------------------------
-    print("=" * 65)
-    print("DEMO 1: Single Match Cycle (5 days)")
-    print("=" * 65)
+    # Project-aligned variable configuration
+    # These should be set by higher-level orchestration in real experiments
+    STATE_VARS = [
+        'Fatigue (z)',
+        'Readiness (z)',
+        'Soreness (z)',
+        'Days Until Match',
+    ]
+    TREATMENT = 'Training Intensity Score'
+    OUTCOME   = 'Match Performance'
+    PLAYER_ID = 1   # Change to any valid player ID (1-27)
 
-    dag1 = creator.build_dag(
-        cycle_lengths=5,
-        state_vars=[
-            'Fatigue (z)',
-            'Readiness (z)',
-            'Soreness (z)',
-        ],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
+    print("=" * 70)
+    print(f"  Building player-specific DAG for Player {PLAYER_ID}")
+    print("=" * 70)
+
+    # Create player-specific DAGCreator (auto-detects cycle lengths from data)
+    creator = DAGCreator(
+        player_id=PLAYER_ID,
+        state_vars=STATE_VARS,
+        treatment_var=TREATMENT,
+        outcome_var=OUTCOME,
+        cross_var_carryover=False,   # Self-only carryover (default)
     )
 
     print(creator.summary())
+    print(repr(creator))
 
-    print("\nOutcome parents (what causes match-day performance):")
-    outcome = creator.get_cycle_outcome(1)
-    for parent in creator.get_parents(outcome):
-        print(f"  <- {parent}")
+    print(f"\nAuto-detected cycle lengths: {creator.cycle_lengths}")
 
-    print(f"\nIs acyclic: {nx.is_directed_acyclic_graph(dag1)}")
-
-    # -----------------------------------------------------------------
-    # Demo 2: Multi-cycle with variable lengths — text summary
-    # -----------------------------------------------------------------
-    print("\n\n" + "=" * 65)
-    print("DEMO 2: Multi-Cycle (3 cycles: 5, 7, 5 days)")
-    print("=" * 65)
-
-    dag2 = creator.build_dag(
-        cycle_lengths=[5, 7, 5],
-        state_vars=[
-            'Fatigue (z)',
-            'Readiness (z)',
-            'Soreness (z)',
-        ],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
-
-    print(creator.summary())
-
-    # Show feedback edges
-    feedback = creator.get_feedback_edges()
-    print(f"\nFeedback edges ({len(feedback)} total):")
-    for src, tgt in feedback:
-        print(f"  {src} --> {tgt}")
-
-    # Show per-cycle structure
-    print("\nNodes per cycle:")
-    for k in range(1, 4):
-        nodes = creator.get_nodes_in_cycle(k)
-        print(f"  Cycle {k}: {len(nodes)} nodes")
-
-    # Show outcome chain
-    print("\nOutcome chain (match performances):")
-    for k in range(1, 4):
-        outcome = creator.get_cycle_outcome(k)
-        parents = creator.get_parents(outcome)
-        children = creator.get_children(outcome)
-        print(f"  {outcome}: {len(parents)} parents, {len(children)} children")
-
-    # Verify the feedback connects outcomes to next baseline
-    print("\nCycle 1 outcome -> Cycle 2 baseline:")
+    # Object role: query examples
     outcome_c1 = creator.get_cycle_outcome(1)
-    for child in creator.get_children(outcome_c1):
-        print(f"  {outcome_c1} --> {child}")
+    print(f"\nCausal parents of {outcome_c1}:")
+    for p in creator.get_parents(outcome_c1):
+        print(f"  <- {p}")
 
-    print(f"\nIs acyclic: {nx.is_directed_acyclic_graph(dag2)}")
-    print(f"Topological generations: {len(list(nx.topological_generations(dag2)))}")
+    tvc = creator.get_time_varying_confounders()
+    print(f"\nTime-varying confounders ({len(tvc)} nodes, require G-methods):")
+    for n in tvc[:6]:
+        print(f"  {n}")
+    if len(tvc) > 6:
+        print(f"  ... ({len(tvc)} total)")
 
-    # -----------------------------------------------------------------
-    # Demo 3: VISUALIZATIONS
-    # -----------------------------------------------------------------
-    print("\n\n" + "=" * 65)
-    print("DEMO 3: DAG Visualizations")
-    print("=" * 65)
+    adj = creator.to_adjacency_matrix()
+    print(f"\nAdjacency matrix: {adj.shape} ({adj.values.sum()} directed edges)")
 
-    # 3a. Schematic view of a single cycle
-    print("\n[3a] Schematic view — single cycle (5 days)...")
-    creator.build_dag(
-        cycle_lengths=5,
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
+    print("\n\n" + "=" * 70)
+    print("  Generating visualizations")
+    print("=" * 70)
+
+    # (a) All cycles, schematic
+    print("\n[a] All cycles -- schematic (collapsed Player State)...")
     creator.visualize(
-        mode='schematic',
-        save_path=str(results_dir / "dag_schematic_single_cycle.png"),
+        cycles=None,
+        completeness='schematic',
+        save_path=str(results_dir / "dag_all_cycles_schematic.png"),
         show=False,
     )
-    print(f"  Saved to: {results_dir / 'dag_schematic_single_cycle.png'}")
 
-    # 3b. Schematic view of multi-cycle (shows feedback edges)
-    print("\n[3b] Schematic view — multi-cycle (3 cycles: 5, 7, 5)...")
-    creator.build_dag(
-        cycle_lengths=[5, 7, 5],
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
+    # (b) First 2 cycles, schematic
+    if len(creator.cycle_lengths) >= 2:
+        print("\n[b] First 2 cycles -- schematic...")
+        creator.visualize(
+            cycles=[1, 2],
+            completeness='schematic',
+            save_path=str(results_dir / "dag_cycles_1_2_schematic.png"),
+            show=False,
+        )
+
+    # (c) Cycle 1 only, detailed (individual variable nodes + grouping boxes)
+    print("\n[c] Cycle 1 -- detailed (all individual state variable nodes)...")
     creator.visualize(
-        mode='schematic',
-        save_path=str(results_dir / "dag_schematic_multi_cycle.png"),
+        cycles=1,
+        completeness='detailed',
+        save_path=str(results_dir / "dag_cycle1_detailed.png"),
         show=False,
     )
-    print(f"  Saved to: {results_dir / 'dag_schematic_multi_cycle.png'}")
 
-    # 3c. Schematic view of just one cycle from a multi-cycle DAG
-    print("\n[3c] Schematic view — cycle 2 only (from the 3-cycle DAG)...")
-    creator.visualize(
-        mode='schematic',
-        cycle=2,
-        save_path=str(results_dir / "dag_schematic_cycle_2_only.png"),
+    # (d) Cycle 1, detailed, with ALL-to-ALL carryover
+    print("\n[d] Cycle 1 -- detailed (ALL-to-ALL cross-variable carryover)...")
+    creator_cross = DAGCreator(
+        player_id=PLAYER_ID,
+        state_vars=STATE_VARS,
+        treatment_var=TREATMENT,
+        outcome_var=OUTCOME,
+        cross_var_carryover=True,
+    )
+    creator_cross.visualize(
+        cycles=1,
+        completeness='detailed',
+        save_path=str(results_dir / "dag_cycle1_detailed_cross_carryover.png"),
         show=False,
     )
-    print(f"  Saved to: {results_dir / 'dag_schematic_cycle_2_only.png'}")
 
-    # 3d. Detailed view of a single cycle (shows all individual variables)
-    print("\n[3d] Detailed view — single cycle (5 days, all nodes)...")
-    creator.build_dag(
-        cycle_lengths=5,
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
-    creator.visualize(
-        mode='detailed',
-        save_path=str(results_dir / "dag_detailed_single_cycle.png"),
-        show=False,
-    )
-    print(f"  Saved to: {results_dir / 'dag_detailed_single_cycle.png'}")
-
-    # 3e. Single cycle convenience method (visualize_cycle)
-    print("\n[3e] visualize_cycle() — cycle 1 schematic shorthand...")
-    creator.build_dag(
-        cycle_lengths=[4, 6],
-        state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-        daily_treatment_var='Activity Type Today',
-        outcome_var='Status Decrease',
-    )
-    creator.visualize_cycle(
-        cycle=1,
-        save_path=str(results_dir / "dag_cycle_1_shorthand.png"),
-        show=False,
-    )
-    print(f"  Saved to: {results_dir / 'dag_cycle_1_shorthand.png'}")
-
-    print("\n" + "=" * 65)
-    print("All visualizations saved to:", results_dir)
-    print("=" * 65)
+    print("\n" + "=" * 70)
+    print(f"  All visualizations saved to: {results_dir}")
+    print("=" * 70)

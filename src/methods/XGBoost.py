@@ -88,8 +88,10 @@ class XGBoostModel:
         unique_values = y.nunique()
         if unique_values <= 10 and y.dtype in ['int64', 'int32', 'bool']:
             return 'classification'
-        else:
-            return 'regression'
+        # Handle float64 binary (0.0/1.0) resulting from pandas operations
+        if unique_values <= 2 and set(y.dropna().unique()).issubset({0, 1, 0.0, 1.0}):
+            return 'classification'
+        return 'regression'
 
     def _load_data(self) -> Dict:
         """Load and preprocess data."""

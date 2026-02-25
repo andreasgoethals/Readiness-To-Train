@@ -93,8 +93,10 @@ class CatBoostModel:
         unique_values = y.nunique()
         if unique_values <= 10 and y.dtype in ['int64', 'int32', 'bool']:
             return 'classification'
-        else:
-            return 'regression'
+        # Handle float64 binary (0.0/1.0) resulting from pandas operations
+        if unique_values <= 2 and set(y.dropna().unique()).issubset({0, 1, 0.0, 1.0}):
+            return 'classification'
+        return 'regression'
 
     def _load_data(self) -> Dict:
         """Load and preprocess data."""
@@ -172,8 +174,11 @@ class CatBoostModel:
 
             # Evaluate on validation set
             if self.task_type == 'classification':
-                y_val_pred = model.predict(self.data['X_val'])
-                score = f1_score(self.data['y_val'], y_val_pred, zero_division=0)
+                y_val_proba = model.predict_proba(self.data['X_val'])[:, 1]
+                if len(np.unique(self.data['y_val'])) > 1:
+                    score = roc_auc_score(self.data['y_val'], y_val_proba)
+                else:
+                    score = 0.0
             else:
                 y_val_pred = model.predict(self.data['X_val'])
                 score = -mean_squared_error(self.data['y_val'], y_val_pred)
@@ -187,8 +192,11 @@ class CatBoostModel:
 
             # Use training score (not ideal)
             if self.task_type == 'classification':
-                y_train_pred = model.predict(self.data['X_train'])
-                score = f1_score(self.data['y_train'], y_train_pred, zero_division=0)
+                y_train_proba = model.predict_proba(self.data['X_train'])[:, 1]
+                if len(np.unique(self.data['y_train'])) > 1:
+                    score = roc_auc_score(self.data['y_train'], y_train_proba)
+                else:
+                    score = 0.0
             else:
                 y_train_pred = model.predict(self.data['X_train'])
                 score = -mean_squared_error(self.data['y_train'], y_train_pred)
@@ -380,11 +388,10 @@ if __name__ == "__main__":
         'Mood (z)', 'Mental State', 'Overall Wellbeing',
         'Total Distance (ACWR) Yesterday',
         'High Speed Distance (ACWR) Yesterday',
-        'Any ACWR Danger', 'Days Since Game',
+        'Any ACWR Danger', 'Days Since Game', 'Days Until Match',
         'Medical Availability Last 14 Days',
         'Club Attendance Last 14 Days',
-        'Position', 'Activity Type Yesterday',
-        'Comment Category Yesterday'
+        'Position', 'Activity Type Yesterday'
     ]
 
     model = CatBoostModel(
