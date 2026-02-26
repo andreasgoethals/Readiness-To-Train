@@ -1,6 +1,6 @@
 # Readiness to Train - Project Documentation
 
-**Generated:** 2026-02-25
+**Generated:** 2026-02-26
 **Project:** Causal Modelling of Player Readiness to Train
 **Partnership:** KU Leuven & OH Leuven
 **Purpose:** Prescriptive analytics for optimal training intensity using Causal Machine Learning (Dynamic Treatment Regimes)
@@ -126,8 +126,23 @@ Readiness-To-Train/
 │       ├── Readiness_Data.csv        # Cleaned & feature-engineered data (4,239 rows × 36 cols)
 │       └── Processed Data Dictionary.pdf  # Auto-generated variable documentation
 │
+├── images/                           # Generated DAG visualizations (per player)
+│   ├── 1/                            # Player 1's DAGs
+│   │   ├── player_1_cycle_1_schematic.png
+│   │   ├── player_1_cycle_1_detailed.png
+│   │   ├── player_1_all_cycles_schematic.png
+│   │   └── player_1_all_cycles_detailed.png
+│   ├── 2/ ... 27/                    # Players 2-27
+│
 ├── notebooks/
-│   └── Processed_Data_Exploration.ipynb  # Comprehensive EDA notebook
+│   ├── Experiment1.ipynb             # Model comparison experiments
+│   ├── Processed_Data_Exploration.ipynb  # Comprehensive EDA notebook
+│   ├── Raw_Data_Exploration.ipynb    # Raw data exploration
+│   └── Raw_Player_Level_Analysis.ipynb   # Player-level raw data analysis
+│
+├── scripts/
+│   ├── Experiment1.py                # Configurable multi-model experiment runner
+│   └── Generate_Visualizations.py    # Batch DAG generation for all players
 │
 ├── src/
 │   ├── data/
@@ -137,7 +152,8 @@ Readiness-To-Train/
 │   └── methods/
 │       ├── DAG_Creator.py            # Causal DAG builder for longitudinal match cycles
 │       ├── LogReg.py                 # Logistic Regression model
-│       └── XGBoost.py                # XGBoost model
+│       ├── XGBoost.py                # XGBoost model
+│       └── CatBoost.py              # CatBoost model with native categorical handling
 │
 ├── results/                          # Model outputs and saved figures
 │
@@ -331,7 +347,26 @@ XGBoostModel(
 )
 ```
 
-Both models support `target_horizon` for predicting future outcomes:
+### Method 3: CatBoost (`CatBoost.py`)
+
+**Best For:** Native categorical feature handling, robust gradient boosting with automatic overfitting detection
+
+**Key Parameters:**
+```python
+CatBoostModel(
+    target_variable='Status Decrease',
+    predictory_columns=[...],
+    lag=3,
+    hpo_trials=20,                # Optuna hyperparameter optimization
+    iterations=500,
+    depth=6,
+    learning_rate=0.1,
+    categorical_encoding='label', # CatBoost handles categoricals natively
+    standardize=False             # Trees don't need standardization
+)
+```
+
+All three models support `target_horizon` for predicting future outcomes:
 ```python
 model = XGBoostModel(
     target_horizon=1,  # Predict tomorrow's Status Decrease using today's features
@@ -390,11 +425,15 @@ creator = DAGCreator(
 creator.visualize(
     cycles=None,          # None=all cycles, int=one cycle index, List[int]=subset
     completeness='schematic',  # 'schematic' or 'detailed'
-    save_path='results/dag_schematic.png',
+    save_path='results/dag_schematic.png',  # Explicit path (takes precedence)
+    output_dir='images/1/',                 # Directory with auto-generated filename
     dpi=150,
     show=True
 )
 ```
+
+If `output_dir` is provided and `save_path` is not, the filename is auto-generated as
+`player_{id}_{cycle_tag}_{completeness}.png` inside the specified directory.
 
 **`completeness` options:**
 
@@ -413,11 +452,12 @@ creator.visualize(
 
 **Examples:**
 ```python
-# Schematic view of all cycles
+# Explicit save path
 creator.visualize(cycles=None, completeness='schematic', save_path='results/dag_all.png')
 
-# Detailed view of cycles 0 and 1 only
-creator.visualize(cycles=[0, 1], completeness='detailed', save_path='results/dag_detail.png')
+# Auto-generated filename in output directory
+creator.visualize(cycles=1, completeness='detailed', output_dir='images/1/')
+# -> saves as images/1/player_1_cycle_1_detailed.png
 
 # Query the DAG object
 adj = creator.to_adjacency_matrix()
@@ -504,10 +544,12 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 
 ```bash
 cd "path/to/Readiness-To-Train"
-python src/data/data_preprocessing.py   # Run preprocessing
-python src/methods/LogReg.py            # Run Logistic Regression
-python src/methods/XGBoost.py           # Run XGBoost
-python src/methods/DAG_Creator.py       # Run DAG demos + generate visualizations
+python src/data/data_preprocessing.py         # Run preprocessing
+python src/methods/LogReg.py                  # Run Logistic Regression
+python src/methods/XGBoost.py                 # Run XGBoost
+python src/methods/DAG_Creator.py             # Run DAG demos + generate visualizations
+python scripts/Experiment1.py                 # Run all-model comparison experiment
+python scripts/Generate_Visualizations.py     # Generate DAGs for all 27 players
 ```
 
 ---
@@ -580,9 +622,41 @@ create_dataset(
 
 ### Model Classes
 
-Both `LogisticRegressionModel` and `XGBoostModel` share:
+`LogisticRegressionModel`, `XGBoostModel`, and `CatBoostModel` all share:
 ```python
 model.train() -> Dict  # Returns predictions, metrics, model weights
+```
+
+### Experiment Runner (`scripts/Experiment1.py`)
+
+```python
+from scripts.Experiment1 import run_experiment
+
+# Inclusion-based: specify exact predictors
+results = run_experiment(
+    target='Status Decrease',
+    lag=3,
+    predictory_columns=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
+                        'Physical State', 'Days Since Game'],
+)
+
+# Exclusion-based: exclude specific columns, use all others
+results = run_experiment(
+    target='Status Decrease',
+    lag=3,
+    exclude_columns=['Comment Yesterday', 'Activity Type Today'],
+)
+```
+
+**Parameters:** `target`, `lag`, `predictory_columns`, `exclude_columns`, `target_horizon`, `test_size`, `val_size`, `hpo_trials`, `random_state`, `verbose`.
+
+**Returns:** `{'config': {...}, 'models': {...}, 'comparison': [...], 'summary': {...}}`
+
+### DAG Batch Generator (`scripts/Generate_Visualizations.py`)
+
+```python
+from scripts.Generate_Visualizations import generate_all_player_dags
+generate_all_player_dags()  # Generates 4 DAGs per player into images/<player_id>/
 ```
 
 ---
@@ -675,6 +749,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-02-25
+**Last Updated:** 2026-02-26
 **Python Version:** 3.8+
-**Key Dependencies:** pandas, numpy, scikit-learn, xgboost, optuna, matplotlib, seaborn, reportlab, networkx
+**Key Dependencies:** pandas, numpy, scikit-learn, xgboost, catboost, optuna, matplotlib, seaborn, reportlab, networkx

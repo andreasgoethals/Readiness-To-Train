@@ -1,14 +1,29 @@
-# Data and Results: Ignore contents but keep the directory structure
+# ===========================================================
+# OHL Player Readiness — Causal ML Project
+# ===========================================================
+
+# -----------------------------------------------------------
+# Project-specific: Data, Results, and Generated Outputs
+# -----------------------------------------------------------
+# Raw and processed data (confidential, covered by NDA)
 data/raw/*
 !data/raw/.gitkeep
 
 data/processed/*
 !data/processed/.gitkeep
 
-results/*
-!results/.gitkeep
+# Model results and experiment outputs
+results/
 
+# Generated DAG visualizations (re-generated via scripts/Generate_Visualizations.py)
+images/
 
+# CatBoost training logs
+catboost_info/
+
+# -----------------------------------------------------------
+# Python
+# -----------------------------------------------------------
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -20,207 +35,74 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
 eggs/
-.eggs/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# -----------------------------------------------------------
+# Jupyter Notebook
+# -----------------------------------------------------------
+.ipynb_checkpoints/
 
-# Unit test / coverage reports
+# -----------------------------------------------------------
+# IDE and Editor
+# -----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject
+
+# -----------------------------------------------------------
+# OS Files
+# -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------
+# Testing and Coverage
+# -----------------------------------------------------------
 htmlcov/
 .tox/
 .nox/
 .coverage
 .coverage.*
 .cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
 .pytest_cache/
-cover/
+.hypothesis/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/#use-with-ide
-.pdm.toml
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
+# -----------------------------------------------------------
+# Type Checkers
+# -----------------------------------------------------------
 .mypy_cache/
 .dmypy.json
-dmypy.json
-
-# Pyre type checker
+.pytype/
 .pyre/
 
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-.DS_Store
-
-# Project-specific
-# ================
-
-# Results and outputs
-results/
-outputs/
+# -----------------------------------------------------------
+# Serialized Models and Large Binaries
+# -----------------------------------------------------------
 *.pkl
 *.joblib
 *.h5
 *.hdf5
-
-# Data files (exclude raw and processed data from git)
-# data/raw/
-# data/processed/
-
-# Model files
-models/
 *.pt
 *.pth
 *.ckpt
 
-# Plots and visualizations
-*.png
-*.jpg
-*.jpeg
-*.pdf
-*.svg
-
-# Logs and temporary files
-*.log
-*.tmp
-*.temp
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Documentation build
-docs/_build/
-site/
-
-# CatBoost training logs (should be redirected to temp, but just in case)
-catboost_info/
-
+# -----------------------------------------------------------
 # Claude Code
+# -----------------------------------------------------------
 .claude/

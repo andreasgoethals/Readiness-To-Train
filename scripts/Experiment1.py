@@ -3,31 +3,40 @@ Experiment 1: Compare All Models on a Readiness Prediction Task
 ================================================================
 
 This script trains and evaluates all available models (LogReg, XGBoost, CatBoost)
-on a configurable prediction task. It is designed to be called programmatically
-from notebooks or other scripts, not just run standalone.
+on a configurable prediction task. Designed to be called programmatically from
+notebooks or other scripts.
 
-PREDICTOR SELECTION: Exclusion-based — you specify which columns to EXCLUDE,
-and all remaining valid columns become predictors. Metadata columns (Date,
-Playerkey, Player ID, Status, and the target variable itself) are always
-excluded automatically.
+Two modes of predictor selection:
+  - INCLUSION-BASED: pass `predictory_columns` directly.
+  - EXCLUSION-BASED: pass `exclude_columns` and all remaining valid columns
+    become predictors. Metadata columns (Date, Playerkey, Player ID, Status,
+    and the target) are always excluded automatically.
 
-TARGET ALIGNMENT: The target variable is always shifted forward by 1 time step
-(target_horizon=1) so that features from time t predict the outcome at t+1.
+If both `predictory_columns` and `exclude_columns` are provided,
+`predictory_columns` takes precedence.
 
 Usage:
-    # From a notebook or another script:
-    from scripts.Experiment1 import main
-    results = main(
-        exclude_columns=['Comment Yesterday', 'Comment Category Yesterday'],
+    from scripts.Experiment1 import run_experiment
+
+    # Inclusion-based
+    results = run_experiment(
+        predictory_columns=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
         target='Status Decrease',
-        lag=3
+        lag=3,
+    )
+
+    # Exclusion-based
+    results = run_experiment(
+        exclude_columns=['Comment Yesterday', 'Activity Type Today'],
+        target='Status Decrease',
+        lag=3,
     )
 """
 
 import sys
 import traceback
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Add src to path so model imports work
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
@@ -51,24 +60,30 @@ ALWAYS_EXCLUDED = {
 
 
 # =============================================================================
-# HELPER: RESOLVE PREDICTORS FROM EXCLUSIONS
+# HELPER: RESOLVE PREDICTORS
 # =============================================================================
 
-def _resolve_predictors(exclude_columns: List[str], target: str) -> List[str]:
+def _resolve_predictors(
+    predictory_columns: Optional[List[str]],
+    exclude_columns: Optional[List[str]],
+    target: str,
+) -> List[str]:
     """
-    Determine predictor columns by loading the processed data and subtracting
-    the excluded columns, always-excluded metadata columns, and the target.
+    Determine predictor columns from either an inclusion list or an exclusion list.
 
     Parameters
     ----------
-    exclude_columns : List[str]
-        User-specified columns to exclude from predictors.
+    predictory_columns : list of str or None
+        Explicit list of columns to use as predictors. Takes precedence over
+        exclude_columns if both are provided.
+    exclude_columns : list of str or None
+        Columns to exclude. All remaining valid columns become predictors.
     target : str
-        Target variable name (also excluded from predictors).
+        Target variable name (always excluded from predictors).
 
     Returns
     -------
-    List[str]
+    list of str
         Sorted list of predictor column names.
     """
     # Load processed data to get all available columns
@@ -76,16 +91,24 @@ def _resolve_predictors(exclude_columns: List[str], target: str) -> List[str]:
     df = pd.read_csv(loader.data_path, nrows=1)
     all_columns = set(df.columns.tolist())
 
-    # Build the full exclusion set
-    exclusion_set = ALWAYS_EXCLUDED | set(exclude_columns) | {target}
+    if predictory_columns is not None:
+        # Inclusion-based: validate that all specified columns exist
+        invalid = set(predictory_columns) - all_columns
+        if invalid:
+            print(f"  Warning: these predictory_columns are not in the data "
+                  f"and will be ignored: {invalid}")
+        predictors = sorted(set(predictory_columns) & all_columns - {target} - ALWAYS_EXCLUDED)
+    else:
+        # Exclusion-based: all columns minus exclusions
+        exclude = exclude_columns or []
+        exclusion_set = ALWAYS_EXCLUDED | set(exclude) | {target}
 
-    # Validate that excluded columns actually exist
-    invalid_exclusions = set(exclude_columns) - all_columns
-    if invalid_exclusions:
-        print(f"  Warning: these exclude_columns are not in the data and will be ignored: {invalid_exclusions}")
+        invalid_exclusions = set(exclude) - all_columns
+        if invalid_exclusions:
+            print(f"  Warning: these exclude_columns are not in the data "
+                  f"and will be ignored: {invalid_exclusions}")
 
-    # Predictors = all columns minus exclusions
-    predictors = sorted(all_columns - exclusion_set)
+        predictors = sorted(all_columns - exclusion_set)
 
     return predictors
 
@@ -98,12 +121,7 @@ def run_logreg(predictors: List[str], target: str, lag: int,
                target_horizon: int = 1,
                test_size: float = 0.2, val_size: float = 0.1,
                hpo_trials: int = 20, random_state: int = 42) -> Dict:
-    """
-    Train and evaluate a Logistic Regression model.
-
-    Uses one-hot encoding (appropriate for linear models) and standardization
-    (required so that regularization treats all features equally).
-    """
+    """Train and evaluate a Logistic Regression model."""
     model = LogisticRegressionModel(
         target_variable=target,
         predictory_columns=predictors,
@@ -124,12 +142,7 @@ def run_xgboost(predictors: List[str], target: str, lag: int,
                 target_horizon: int = 1,
                 test_size: float = 0.2, val_size: float = 0.1,
                 random_state: int = 42) -> Dict:
-    """
-    Train and evaluate an XGBoost model.
-
-    Uses label encoding (efficient for tree-based models) and no
-    standardization (trees are scale-invariant).
-    """
+    """Train and evaluate an XGBoost model."""
     model = XGBoostModel(
         target_variable=target,
         predictory_columns=predictors,
@@ -152,12 +165,7 @@ def run_catboost(predictors: List[str], target: str, lag: int,
                  target_horizon: int = 1,
                  test_size: float = 0.2, val_size: float = 0.1,
                  hpo_trials: int = 20, random_state: int = 42) -> Dict:
-    """
-    Train and evaluate a CatBoost model.
-
-    Uses label encoding (CatBoost handles categorical features natively)
-    and no standardization (trees are scale-invariant).
-    """
+    """Train and evaluate a CatBoost model."""
     model = CatBoostModel(
         target_variable=target,
         predictory_columns=predictors,
@@ -181,37 +189,36 @@ def run_catboost(predictors: List[str], target: str, lag: int,
 # MAIN EXPERIMENT FUNCTION
 # =============================================================================
 
-def main(
-    exclude_columns: List[str],
-    target: str,
-    lag: int,
+def run_experiment(
+    target: str = 'Status Decrease',
+    lag: int = 3,
+    predictory_columns: Optional[List[str]] = None,
+    exclude_columns: Optional[List[str]] = None,
     target_horizon: int = 1,
     test_size: float = 0.2,
     val_size: float = 0.1,
     hpo_trials: int = 20,
     random_state: int = 42,
-    verbose: bool = True
+    verbose: bool = True,
 ) -> Dict:
     """
     Run Experiment 1: train all three models and compare performance.
 
-    This is the main entry point for the experiment. It resolves predictors
-    from the exclusion list, trains LogReg, XGBoost, and CatBoost on the
-    same data split, collects their results, and returns a structured
-    dictionary for downstream analysis and visualization.
-
     Parameters
     ----------
-    exclude_columns : List[str]
-        Column names to EXCLUDE from predictors. All other valid columns
-        (minus metadata and the target) will be used as predictors.
-    target : str
-        Target variable name (e.g., 'Status Decrease').
-    lag : int
-        Number of lag steps for temporal features (e.g., 3 creates t-1, t-2, t-3).
+    target : str, default='Status Decrease'
+        Target / outcome variable name.
+    lag : int, default=3
+        Number of lag steps for temporal features.
+    predictory_columns : list of str or None
+        Explicit list of predictor columns (inclusion-based). If provided,
+        takes precedence over exclude_columns.
+    exclude_columns : list of str or None
+        Columns to exclude from predictors (exclusion-based). All remaining
+        valid columns (minus metadata and target) are used. Ignored when
+        predictory_columns is provided.
     target_horizon : int, default=1
-        Number of time steps to shift the target forward. With target_horizon=1,
-        features from time t predict the target at time t+1.
+        Number of time steps to shift the target forward.
     test_size : float, default=0.2
         Proportion of dates for the test set.
     val_size : float, default=0.1
@@ -225,18 +232,18 @@ def main(
 
     Returns
     -------
-    Dict with keys:
-        - 'config': dict of experiment configuration parameters
+    dict with keys:
+        - 'config': experiment configuration parameters
         - 'models': dict mapping model_name -> results dict (or None if failed)
-        - 'comparison': list of dicts with model name and metrics (successful only)
+        - 'comparison': list of dicts with model name and metrics
         - 'summary': dict with total, successful, failed counts
     """
-    # Resolve predictors from exclusion list
-    predictors = _resolve_predictors(exclude_columns, target)
+    # Resolve predictors
+    predictors = _resolve_predictors(predictory_columns, exclude_columns, target)
 
-    # Store experiment configuration
     config = {
         'predictors': predictors,
+        'predictory_columns': predictory_columns,
         'exclude_columns': exclude_columns,
         'target': target,
         'lag': lag,
@@ -244,18 +251,23 @@ def main(
         'test_size': test_size,
         'val_size': val_size,
         'hpo_trials': hpo_trials,
-        'random_state': random_state
+        'random_state': random_state,
+        'selection_mode': 'inclusion' if predictory_columns is not None else 'exclusion',
     }
 
     if verbose:
         print("=" * 80)
         print("EXPERIMENT 1: Comparing All Models")
         print("=" * 80)
-        print(f"\n  Target Variable:    {target}")
-        print(f"  Target Horizon:     t+{target_horizon}")
-        print(f"  Excluded Columns:   {exclude_columns}")
+        print(f"\n  Target Variable:      {target}")
+        print(f"  Target Horizon:       t+{target_horizon}")
+        print(f"  Selection Mode:       {config['selection_mode']}")
+        if predictory_columns is not None:
+            print(f"  Predictory Columns:   {len(predictors)} specified")
+        else:
+            print(f"  Excluded Columns:     {exclude_columns}")
         print(f"  Number of Predictors: {len(predictors)}")
-        print(f"  Predictors:         {predictors}")
+        print(f"  Predictors:           {predictors}")
         print(f"  Lag:                  {lag}")
         print(f"  Test Size:            {test_size}")
         print(f"  Validation Size:      {val_size}")
@@ -311,10 +323,9 @@ def main(
                 'precision': metrics.get('precision_optimal'),
                 'recall': metrics.get('recall_optimal'),
                 'optimal_threshold': metrics.get('optimal_threshold'),
-                'best_params': results.get('best_params')
+                'best_params': results.get('best_params'),
             })
 
-    # Summary counts
     n_success = sum(1 for r in model_results.values() if r is not None)
     n_failed = sum(1 for r in model_results.values() if r is None)
 
@@ -322,7 +333,7 @@ def main(
         'total': len(model_runners),
         'successful': n_success,
         'failed': n_failed,
-        'failed_models': [name for name, r in model_results.items() if r is None]
+        'failed_models': [name for name, r in model_results.items() if r is None],
     }
 
     if verbose:
@@ -332,8 +343,12 @@ def main(
         'config': config,
         'models': model_results,
         'comparison': comparison,
-        'summary': summary
+        'summary': summary,
     }
+
+
+# Keep backward-compatible alias
+main = run_experiment
 
 
 # =============================================================================
@@ -390,9 +405,8 @@ def _print_summary(comparison: list, summary: dict):
 # =============================================================================
 
 if __name__ == "__main__":
-    # Example: exclude free-text comments and run with lag=3
-    results = main(
+    results = run_experiment(
         exclude_columns=['Comment Yesterday'],
         target='Status Decrease',
-        lag=3
+        lag=3,
     )

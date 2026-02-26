@@ -685,6 +685,7 @@ class DAGCreator:
         cycles: Optional[Union[int, List[int]]] = None,
         completeness: str = 'schematic',
         save_path: Optional[str] = None,
+        output_dir: Optional[str] = None,
         figsize: Optional[Tuple[float, float]] = None,
         title: Optional[str] = None,
         dpi: int = 150,
@@ -709,7 +710,12 @@ class DAGCreator:
                             grouped visually under a "Player State" bounding box
                             to make clear they represent the same concept.
         save_path : str or None
-            Save figure to this path (.png, .pdf, .svg). None = don't save.
+            Save figure to this explicit path (.png, .pdf, .svg). None = don't
+            save. Takes precedence over output_dir if both are provided.
+        output_dir : str or None
+            Directory where the figure should be saved with an auto-generated
+            filename. Ignored if save_path is provided. The auto-generated name
+            encodes player ID, cycles shown, and completeness level.
         figsize : (float, float) or None
             Figure size in inches. Auto-computed if None.
         title : str or None
@@ -755,11 +761,25 @@ class DAGCreator:
                 "Choose 'schematic' or 'detailed'."
             )
 
-        if save_path is not None:
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(save_path, dpi=dpi, bbox_inches='tight',
+        # Resolve save location: explicit save_path takes precedence,
+        # otherwise auto-generate filename in output_dir if provided.
+        resolved_path = save_path
+        if resolved_path is None and output_dir is not None:
+            pid = self.metadata['player_id']
+            if cycles is None:
+                cycle_tag = "all_cycles"
+            elif isinstance(cycles, int):
+                cycle_tag = f"cycle_{cycles}"
+            else:
+                cycle_tag = f"cycles_{'_'.join(str(c) for c in cycles_to_show)}"
+            fname = f"player_{pid}_{cycle_tag}_{completeness}.png"
+            resolved_path = str(Path(output_dir) / fname)
+
+        if resolved_path is not None:
+            Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(resolved_path, dpi=dpi, bbox_inches='tight',
                         facecolor=fig.get_facecolor(), edgecolor='none')
-            print(f"     Saved: {save_path}")
+            print(f"     Saved: {resolved_path}")
 
         if show:
             plt.show()
