@@ -137,7 +137,16 @@ class DAGCreator:
         Outcome variable name Y. Match-day physical performance metric.
     data_path : str or Path, optional
         Path to processed CSV. Defaults to data/processed/Readiness_Data.csv
-        relative to the project root.
+        relative to the project root. Ignored if ``player_df`` is provided.
+    player_df : pd.DataFrame, optional
+        Pre-loaded processed DataFrame (must contain a 'Player ID' column).
+        When provided, data_path is ignored. Use this to share the same
+        in-memory DataFrame with ReadinessDataLoader in causal experiments,
+        e.g.::
+
+            loader = ReadinessDataLoader()
+            processed_df = loader.load_processed_data()
+            creator = DAGCreator(player_id=1, ..., player_df=processed_df)
     cross_var_carryover : bool, default=False
         If False: self-only carryover -- each state variable at t only directly
         affects the same variable at t+1 (N edges per step, parsimonious).
@@ -162,6 +171,7 @@ class DAGCreator:
         treatment_var: str,
         outcome_var: str,
         data_path: Optional[Union[str, Path]] = None,
+        player_df: Optional[pd.DataFrame] = None,
         cross_var_carryover: bool = False,
     ):
         # Validate inputs
@@ -183,7 +193,7 @@ class DAGCreator:
         self.cross_var_carryover = cross_var_carryover
 
         # Load data, detect cycles, build DAG (all automatic)
-        self._player_df: pd.DataFrame = self._load_player_data(data_path)
+        self._player_df: pd.DataFrame = self._load_player_data(data_path, player_df)
         self.cycle_lengths: List[int] = self._detect_cycle_lengths()
         self.dag: Optional[nx.DiGraph] = None
         self.metadata: Optional[Dict[str, Any]] = None
@@ -196,8 +206,21 @@ class DAGCreator:
     def _load_player_data(
         self,
         data_path: Optional[Union[str, Path]],
+        player_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Load and return the processed data rows for this player, sorted by Date."""
+        if player_df is not None:
+            if 'Player ID' not in player_df.columns:
+                raise ValueError("player_df must contain a 'Player ID' column")
+            pdf = player_df[player_df['Player ID'] == self.player_id].copy()
+            if pdf.empty:
+                raise ValueError(
+                    f"No data found for Player ID {self.player_id} in player_df"
+                )
+            if 'Date' in pdf.columns:
+                pdf['Date'] = pd.to_datetime(pdf['Date'])
+            return pdf.sort_values('Date').reset_index(drop=True)
+
         if data_path is None:
             script_dir = Path(__file__).parent
             project_root = script_dir.parent.parent

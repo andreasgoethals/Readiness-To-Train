@@ -55,7 +55,13 @@ from data.data_loader import ReadinessDataLoader
 # =============================================================================
 
 ALWAYS_EXCLUDED = {
-    'Date', 'Playerkey', 'Player ID', 'Status'
+    # Identifiers / metadata
+    'Date', 'Playerkey', 'Player ID', 'Status',
+    # Post-assessment variables (determined AFTER the morning assessment;
+    # using these as predictors would constitute data leakage at inference time)
+    'Activity Type Today',   # session type decided after morning assessment
+    'Match Day',             # team-level flag derived from Activity Type Today
+    'Selected',              # player selection flag derived from Activity Type Today
 }
 
 

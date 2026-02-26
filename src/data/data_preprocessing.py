@@ -477,10 +477,20 @@ def add_activity_type_today(df):
     # Sort by player and date to ensure chronological order within each player
     df_sorted = df.sort_values(['Player ID', 'Date']).copy()
 
-    # shift(-1): pull the NEXT row's value within each player group
-    # This gives us "what activity type will be recorded as 'yesterday' tomorrow"
-    # which is effectively "what the player does today"
+    # shift(-1): pull the NEXT row's 'Activity Type Yesterday' within each player group.
+    # Since tomorrow's "yesterday" is today's "today", this gives Activity Type Today.
     df_sorted['Activity Type Today'] = df_sorted.groupby('Player ID')['Activity Type Yesterday'].shift(-1)
+
+    # Date continuity guard: Activity Type Today is only valid if the very next row
+    # for this player is exactly date+1. If there is a gap (the player was absent the
+    # following day and no row exists for that day), the shift pulls the wrong activity.
+    # Example: row at Friday (t) pulls Monday's Activity Type Yesterday as "Today",
+    # which would incorrectly label Friday's treatment as Monday's session type.
+    # Fix: NaN out any row where the next row is not strictly the next calendar day.
+    df_sorted['_next_date'] = df_sorted.groupby('Player ID')['Date'].shift(-1)
+    gap_mask = df_sorted['_next_date'] != (df_sorted['Date'] + pd.Timedelta(days=1))
+    df_sorted.loc[gap_mask, 'Activity Type Today'] = np.nan
+    df_sorted = df_sorted.drop(columns=['_next_date'])
 
     # Map the computed values back to the original DataFrame's row order
     # using a temporary composite key (Player_ID + Date) as the join key

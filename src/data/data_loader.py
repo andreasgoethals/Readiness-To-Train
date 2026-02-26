@@ -193,6 +193,34 @@ class ReadinessDataLoader:
 
         return df
 
+    def load_processed_data(self) -> pd.DataFrame:
+        """
+        Return the raw processed DataFrame (before ML splits or encoding).
+
+        Use this to share the same in-memory data with DAGCreator so that
+        both the causal structure (DAGCreator) and the ML pipeline
+        (ReadinessDataLoader) operate on the same source. Example::
+
+            loader = ReadinessDataLoader()
+            processed_df = loader.load_processed_data()
+
+            from src.methods.DAG_Creator import DAGCreator
+            creator = DAGCreator(
+                player_id=1,
+                state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
+                treatment_var='Training Intensity Score',
+                outcome_var='Match Performance',
+                player_df=processed_df,   # share the already-loaded data
+            )
+
+        Returns
+        -------
+        pd.DataFrame
+            Full processed dataset (all players), as loaded from disk,
+            with Date parsed as datetime.
+        """
+        return self._verify_and_load_data()
+
     def _merge_activity_categories(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Merge rare Activity Type categories to reduce cardinality.
