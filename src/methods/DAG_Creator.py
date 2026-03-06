@@ -66,9 +66,6 @@ the current cycle -- the player keeps training until they next play.
 
     CYCLE k (N training days + match at the end)
 
-    L0 (baseline state at start of cycle)
-     |
-     v  baseline_to_covariate
     L1 --> A1 --> L2 --> A2 --> ... --> LN --> AN
      |     |       |     |               |      |
      |     | (treatment_effect)          |      |
@@ -78,7 +75,8 @@ the current cycle -- the player keeps training until they next play.
                                                v
                                                Y  (match-day performance)
 
-    Between cycles: Yk --> L0_(k+1)    (outcome_to_baseline feedback)
+    Between cycles: Yk --> L1_(k+1)           (outcome_to_first_state feedback)
+                    L_final_k --> L1_(k+1)    (final_state_to_first_state carry-over)
 
 === NON-SELECTED PLAYERS ===
 
@@ -100,14 +98,13 @@ cross_var_carryover=True (ALL-to-ALL, more biologically complete):
     Readiness_t1 --> {Fatigue_t2, Readiness_t2, Soreness_t2, ...}
     (every state variable at t directly affects every state variable at t+1)
 
-The same rule applies consistently to BOTH baseline-->day1 AND day-->day+1
-carryover edges.
+Applied consistently to day-->day+1 carryover edges.
 """
 
 import networkx as nx
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -129,30 +126,22 @@ class DAGCreator:
     player_id : int
         Player ID from the processed dataset (1-27).
     state_vars : list of str
-        Covariate (player state) variable names Lt. Appear as baseline (t=0)
-        and daily covariates (t=1..N) in each cycle.
+        Covariate (player state) variable names Lt. Appear as daily covariates
+        (t=1..N) in each cycle. The first state (t=1) represents the player's
+        condition at cycle start.
     treatment_var : str
         Treatment variable name At. Continuous daily training intensity in [0,1].
     outcome_var : str
         Outcome variable name Y. Match-day physical performance metric.
     data_path : str or Path, optional
         Path to processed CSV. Defaults to data/processed/Readiness_Data.csv
-        relative to the project root. Ignored if ``player_df`` is provided.
-    player_df : pd.DataFrame, optional
-        Pre-loaded processed DataFrame (must contain a 'Player ID' column).
-        When provided, data_path is ignored. Use this to share the same
-        in-memory DataFrame with ReadinessDataLoader in causal experiments,
-        e.g.::
-
-            loader = ReadinessDataLoader()
-            processed_df = loader.load_processed_data()
-            creator = DAGCreator(player_id=1, ..., player_df=processed_df)
+        relative to the project root.
     cross_var_carryover : bool, default=False
         If False: self-only carryover -- each state variable at t only directly
         affects the same variable at t+1 (N edges per step, parsimonious).
         If True: ALL-to-ALL -- every state variable at t affects every state
         variable at t+1 (N^2 edges per step, biologically richer).
-        Applied consistently to both baseline->day1 and day->day+1 transitions.
+        Applied consistently to all day->day+1 transitions within each cycle.
 
     Attributes
     ----------
@@ -171,7 +160,6 @@ class DAGCreator:
         treatment_var: str,
         outcome_var: str,
         data_path: Optional[Union[str, Path]] = None,
-        player_df: Optional[pd.DataFrame] = None,
         cross_var_carryover: bool = False,
     ):
         # Validate inputs
@@ -193,7 +181,7 @@ class DAGCreator:
         self.cross_var_carryover = cross_var_carryover
 
         # Load data, detect cycles, build DAG (all automatic)
-        self._player_df: pd.DataFrame = self._load_player_data(data_path, player_df)
+        self._player_df: pd.DataFrame = self._load_player_data(data_path)
         self.cycle_lengths: List[int] = self._detect_cycle_lengths()
         self.dag: Optional[nx.DiGraph] = None
         self.metadata: Optional[Dict[str, Any]] = None
@@ -206,21 +194,8 @@ class DAGCreator:
     def _load_player_data(
         self,
         data_path: Optional[Union[str, Path]],
-        player_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """Load and return the processed data rows for this player, sorted by Date."""
-        if player_df is not None:
-            if 'Player ID' not in player_df.columns:
-                raise ValueError("player_df must contain a 'Player ID' column")
-            pdf = player_df[player_df['Player ID'] == self.player_id].copy()
-            if pdf.empty:
-                raise ValueError(
-                    f"No data found for Player ID {self.player_id} in player_df"
-                )
-            if 'Date' in pdf.columns:
-                pdf['Date'] = pd.to_datetime(pdf['Date'])
-            return pdf.sort_values('Date').reset_index(drop=True)
-
         if data_path is None:
             script_dir = Path(__file__).parent
             project_root = script_dir.parent.parent
@@ -287,8 +262,8 @@ class DAGCreator:
             # Cycle ends at the match row (inclusive)
             cycle_end = match_pos
 
-            # Baseline (L0) = row at cycle_start
-            # Treatment days (t1..tN) = rows cycle_start+1 .. cycle_end
+            # First state (L1) = row at cycle_start + 1 (day after previous match)
+            # Full cycle: L1, A1, L2, A2, ... through to match day
             n_treatment_days = cycle_end - cycle_start
 
             # Guarantee at least 1 treatment day (even if match follows immediately)
@@ -310,6 +285,26 @@ class DAGCreator:
     def _outcome_node_name(var: str, cycle: int) -> str:
         """Outcome node name: '{var}_c{cycle}'."""
         return f"{var}_c{cycle}"
+
+    @staticmethod
+    def _wrap_label(text: str, max_chars: int = 14) -> str:
+        """Wrap text onto multiple lines so each line fits within *max_chars*."""
+        if len(text) <= max_chars:
+            return text
+        words = text.split()
+        lines: List[str] = []
+        current = ""
+        for w in words:
+            test = f"{current} {w}".strip()
+            if len(test) <= max_chars:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = w
+        if current:
+            lines.append(current)
+        return "\n".join(lines)
 
     # =========================================================================
     # DAG CONSTRUCTION (private)
@@ -334,28 +329,20 @@ class DAGCreator:
         n_days : int
             Number of training days (= number of At nodes) in this cycle.
         absolute_time_offset : int
-            Absolute time index for t=0 of this cycle.
+            Absolute time index for t=1 of this cycle.
 
         Returns
         -------
-        dict with 'baseline_nodes', 'outcome_node', 'absolute_time_end'.
+        dict with 'outcome_node', 'absolute_time_end'.
         """
         state_vars = self.state_vars
         treatment_var = self.treatment_var
         outcome_var = self.outcome_var
         cross = self.cross_var_carryover
 
-        # --- Step 1: Baseline nodes (L0) ---
-        baseline_nodes = []
-        for var in state_vars:
-            node = self._node_name(var, cycle, 0)
-            G.add_node(node, variable=var, cycle=cycle, day=0,
-                       absolute_time=absolute_time_offset, role='baseline')
-            baseline_nodes.append(node)
-
-        # --- Step 2: Daily covariate + treatment nodes (t1..tN) ---
+        # --- Step 1: Daily covariate + treatment nodes (t=1..N) ---
         for day in range(1, n_days + 1):
-            abs_time = absolute_time_offset + day
+            abs_time = absolute_time_offset + day - 1
             for var in state_vars:
                 node = self._node_name(var, cycle, day)
                 G.add_node(node, variable=var, cycle=cycle, day=day,
@@ -365,32 +352,22 @@ class DAGCreator:
                        cycle=cycle, day=day, absolute_time=abs_time,
                        role='treatment')
 
-        # --- Step 3: Outcome node Y ---
-        outcome_abs_time = absolute_time_offset + n_days + 1
+        # --- Step 2: Outcome node Y ---
+        outcome_abs_time = absolute_time_offset + n_days
         outcome_node = self._outcome_node_name(outcome_var, cycle)
         G.add_node(outcome_node, variable=outcome_var, cycle=cycle,
                    day=n_days + 1, absolute_time=outcome_abs_time, role='outcome')
 
-        # --- Step 4: Baseline --> Day 1 (baseline_to_covariate) ---
-        # cross_var_carryover=False: self-only (baseline_var_i --> cov_var_i)
-        # cross_var_carryover=True:  ALL-to-ALL (every baseline_var --> every cov_var)
-        for src_var in state_vars:
-            b_node = self._node_name(src_var, cycle, 0)
-            tgt_vars = state_vars if cross else [src_var]
-            for tgt_var in tgt_vars:
-                c_node = self._node_name(tgt_var, cycle, 1)
-                G.add_edge(b_node, c_node, relation='baseline_to_covariate')
-
-        # --- Step 5: Daily structure (days 1..N) ---
+        # --- Step 3: Daily structure (days 1..N) ---
         for day in range(1, n_days + 1):
             treat_node = self._node_name(treatment_var, cycle, day)
 
-            # 5a. Lt --> At  (confounding: coaches prescribe based on player state)
+            # 3a. Lt --> At  (confounding: coaches prescribe based on player state)
             for var in state_vars:
                 cov_node = self._node_name(var, cycle, day)
                 G.add_edge(cov_node, treat_node, relation='confounding')
 
-            # 5b. Carry-over to the next day
+            # 3b. Carry-over to the next day
             if day < n_days:
                 next_day = day + 1
 
@@ -400,8 +377,6 @@ class DAGCreator:
                     G.add_edge(treat_node, next_cov, relation='treatment_effect')
 
                 # Lt --> L(t+1)  (state carryover / persistence)
-                # cross_var_carryover=False: self-only (same var, N edges)
-                # cross_var_carryover=True:  ALL-to-ALL (N^2 edges)
                 for src_var in state_vars:
                     curr_cov = self._node_name(src_var, cycle, day)
                     tgt_vars = state_vars if cross else [src_var]
@@ -409,7 +384,7 @@ class DAGCreator:
                         next_cov = self._node_name(tgt_var, cycle, next_day)
                         G.add_edge(curr_cov, next_cov, relation='state_carryover')
 
-        # --- Step 6: Final day --> Outcome Y ---
+        # --- Step 4: Final day --> Outcome Y ---
         final_treat = self._node_name(treatment_var, cycle, n_days)
         G.add_edge(final_treat, outcome_node, relation='treatment_to_outcome')
         for var in state_vars:
@@ -417,7 +392,6 @@ class DAGCreator:
             G.add_edge(final_cov, outcome_node, relation='covariate_to_outcome')
 
         return {
-            'baseline_nodes': baseline_nodes,
             'outcome_node': outcome_node,
             'absolute_time_end': outcome_abs_time,
         }
@@ -437,6 +411,7 @@ class DAGCreator:
         absolute_time_offset = 0
         cycle_info = []
         prev_outcome_node = None
+        prev_n_days = None
 
         for k in range(1, n_cycles + 1):
             n_days = self.cycle_lengths[k - 1]
@@ -446,23 +421,33 @@ class DAGCreator:
                 absolute_time_offset=absolute_time_offset,
             )
 
-            # Inter-cycle feedback: Y_{k-1} --> L0_k
+            # Inter-cycle feedback: Y_{k-1} --> L1_k
             if prev_outcome_node is not None:
                 for var in self.state_vars:
-                    baseline_node = self._node_name(var, k, 0)
-                    G.add_edge(prev_outcome_node, baseline_node,
-                               relation='outcome_to_baseline')
+                    first_state = self._node_name(var, k, 1)
+                    G.add_edge(prev_outcome_node, first_state,
+                               relation='outcome_to_first_state')
+
+                # Final state carry-over: L_final_{k-1} --> L1_k
+                for src_var in self.state_vars:
+                    prev_final = self._node_name(src_var, k - 1, prev_n_days)
+                    tgt_vars = (self.state_vars
+                                if self.cross_var_carryover else [src_var])
+                    for tgt_var in tgt_vars:
+                        first_state = self._node_name(tgt_var, k, 1)
+                        G.add_edge(prev_final, first_state,
+                                   relation='final_state_to_first_state')
 
             cycle_info.append({
                 'cycle': k,
                 'n_days': n_days,
-                'n_baseline_nodes': len(self.state_vars),
                 'n_covariate_nodes': len(self.state_vars) * n_days,
                 'n_treatment_nodes': n_days,
                 'n_outcome_nodes': 1,
             })
 
             prev_outcome_node = result['outcome_node']
+            prev_n_days = n_days
             absolute_time_offset = result['absolute_time_end'] + 1
 
         if not nx.is_directed_acyclic_graph(G):
@@ -473,7 +458,7 @@ class DAGCreator:
 
         n_feedback = sum(
             1 for _, _, d in G.edges(data=True)
-            if d.get('relation') == 'outcome_to_baseline'
+            if d.get('relation') in ('outcome_to_first_state', 'final_state_to_first_state')
         )
 
         self.dag = G
@@ -507,7 +492,7 @@ class DAGCreator:
         Parameters
         ----------
         role : str
-            One of 'baseline', 'covariate', 'treatment', 'outcome'.
+            One of 'covariate', 'treatment', 'outcome'.
         """
         self._check_dag()
         nodes = [
@@ -556,8 +541,9 @@ class DAGCreator:
         return self._outcome_node_name(m['outcome_var'], cycle)
 
     def get_feedback_edges(self) -> List[tuple]:
-        """Get all outcome-to-baseline inter-cycle feedback edges."""
-        return self.get_edges_by_relation('outcome_to_baseline')
+        """Get all inter-cycle feedback edges (outcome → first state AND final state → first state)."""
+        return (self.get_edges_by_relation('outcome_to_first_state')
+                + self.get_edges_by_relation('final_state_to_first_state'))
 
     def get_parents(self, node: str) -> List[str]:
         """Get direct causes (parents) of a node."""
@@ -576,9 +562,9 @@ class DAGCreator:
         Parameters
         ----------
         relation : str
-            One of: 'baseline_to_covariate', 'confounding', 'treatment_effect',
-            'state_carryover', 'treatment_to_outcome', 'covariate_to_outcome',
-            'outcome_to_baseline'.
+            One of: 'confounding', 'treatment_effect', 'state_carryover',
+            'treatment_to_outcome', 'covariate_to_outcome',
+            'outcome_to_first_state', 'final_state_to_first_state'.
         """
         self._check_dag()
         return [
@@ -658,7 +644,6 @@ class DAGCreator:
     # =========================================================================
 
     _COLORS = {
-        'baseline':   '#1A6B4A',   # Deep emerald  -- baseline state L0
         'covariate':  '#1D4E89',   # Deep blue     -- time-varying state Lt
         'treatment':  '#B5451B',   # Burnt sienna  -- treatment At
         'outcome':    '#7B1D1D',   # Deep crimson  -- match outcome Y
@@ -670,33 +655,33 @@ class DAGCreator:
     }
 
     _EDGE_STYLES = {
-        'baseline_to_covariate': {
-            'color': '#1A6B4A', 'style': '-',  'alpha': 0.65, 'width': 1.4,
-            'label': 'Initial conditions (L0 -> Lt)',
-        },
         'confounding': {
-            'color': '#B5451B', 'style': '--', 'alpha': 0.90, 'width': 1.8,
+            'color': '#B5451B', 'style': '--', 'alpha': 0.92, 'width': 2.2,
             'label': 'Confounding (Lt -> At)',
         },
         'treatment_effect': {
-            'color': '#8B0000', 'style': '-',  'alpha': 0.90, 'width': 2.0,
+            'color': '#8B0000', 'style': '-',  'alpha': 0.92, 'width': 2.4,
             'label': 'Treatment effect (At -> L(t+1))',
         },
         'state_carryover': {
-            'color': '#1D4E89', 'style': '-',  'alpha': 0.55, 'width': 1.4,
+            'color': '#1D4E89', 'style': '-',  'alpha': 0.70, 'width': 2.0,
             'label': 'State carry-over (Lt -> L(t+1))',
         },
         'treatment_to_outcome': {
-            'color': '#8B0000', 'style': '-',  'alpha': 0.92, 'width': 2.2,
+            'color': '#8B0000', 'style': '-',  'alpha': 0.94, 'width': 2.6,
             'label': 'Treatment -> outcome',
         },
         'covariate_to_outcome': {
-            'color': '#1D4E89', 'style': '-',  'alpha': 0.75, 'width': 1.6,
+            'color': '#1D4E89', 'style': '-',  'alpha': 0.82, 'width': 2.2,
             'label': 'State -> outcome',
         },
-        'outcome_to_baseline': {
-            'color': '#4A1472', 'style': '-',  'alpha': 0.95, 'width': 2.5,
-            'label': 'Inter-cycle feedback (Yk -> L0_(k+1))',
+        'outcome_to_first_state': {
+            'color': '#4A1472', 'style': '-',  'alpha': 0.95, 'width': 2.8,
+            'label': 'Inter-cycle feedback (Yk -> L1_(k+1))',
+        },
+        'final_state_to_first_state': {
+            'color': '#0B7A75', 'style': '-',  'alpha': 0.88, 'width': 2.4,
+            'label': 'Final state carry-over (L_final -> L1_(k+1))',
         },
     }
 
@@ -711,7 +696,7 @@ class DAGCreator:
         output_dir: Optional[str] = None,
         figsize: Optional[Tuple[float, float]] = None,
         title: Optional[str] = None,
-        dpi: int = 150,
+        dpi: int = 300,
         show: bool = True,
     ) -> plt.Figure:
         """
@@ -800,9 +785,18 @@ class DAGCreator:
 
         if resolved_path is not None:
             Path(resolved_path).parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(resolved_path, dpi=dpi, bbox_inches='tight',
+            # Auto-cap DPI if the resulting image would exceed matplotlib's
+            # 2^16 pixel limit in either dimension.
+            _MAX_PX = 65000  # safe margin below 2^16 = 65536
+            fig_w_in, fig_h_in = fig.get_size_inches()
+            max_dim_in = max(fig_w_in, fig_h_in)
+            effective_dpi = dpi
+            if max_dim_in * dpi > _MAX_PX:
+                effective_dpi = int(_MAX_PX / max_dim_in)
+                effective_dpi = max(72, effective_dpi)  # never below 72
+            fig.savefig(resolved_path, dpi=effective_dpi, bbox_inches='tight',
                         facecolor=fig.get_facecolor(), edgecolor='none')
-            print(f"     Saved: {resolved_path}")
+            print(f"     Saved: {resolved_path}  (dpi={effective_dpi})")
 
         if show:
             plt.show()
@@ -846,8 +840,9 @@ class DAGCreator:
         self, ax: plt.Axes, x: float, y: float,
         label: str, role: str,
         node_w: float = 1.8, node_h: float = 0.85,
+        fontsize: float = 7.5,
     ):
-        """Draw an elliptical state (baseline or covariate) node."""
+        """Draw an elliptical state (covariate) node."""
         color = self._get_node_color(role)
         ellipse = mpatches.Ellipse(
             (x, y), node_w, node_h,
@@ -856,13 +851,15 @@ class DAGCreator:
         )
         ax.add_patch(ellipse)
         ax.text(x, y, label, ha='center', va='center',
-                fontsize=7.5, fontweight='bold', color='white', zorder=4,
-                linespacing=1.3)
+                fontsize=fontsize, fontweight='bold', color='white', zorder=4,
+                linespacing=1.1)
+        return ellipse
 
     def _draw_treatment_node(
         self, ax: plt.Axes, x: float, y: float,
         label: str,
         node_w: float = 1.6, node_h: float = 0.75,
+        fontsize: float = 7.5,
     ):
         """Draw a rounded-rectangle treatment node."""
         color = self._get_node_color('treatment')
@@ -875,12 +872,14 @@ class DAGCreator:
         )
         ax.add_patch(rect)
         ax.text(x, y, label, ha='center', va='center',
-                fontsize=7.5, fontweight='bold', color='white', zorder=4,
-                linespacing=1.3)
+                fontsize=fontsize, fontweight='bold', color='white', zorder=4,
+                linespacing=1.1)
+        return rect
 
     def _draw_outcome_node(
         self, ax: plt.Axes, x: float, y: float,
         label: str, radius: float = 0.72,
+        fontsize: float = 7.5,
     ):
         """Draw a diamond-shaped outcome node."""
         color = self._get_node_color('outcome')
@@ -892,8 +891,38 @@ class DAGCreator:
         )
         ax.add_patch(diamond)
         ax.text(x, y, label, ha='center', va='center',
-                fontsize=7.5, fontweight='bold', color='white', zorder=4,
-                linespacing=1.3)
+                fontsize=fontsize, fontweight='bold', color='white', zorder=4,
+                linespacing=1.1)
+        return diamond
+
+    def _draw_fancy_arrow(
+        self,
+        ax: plt.Axes,
+        pos_a: Tuple[float, float],
+        pos_b: Tuple[float, float],
+        relation: str,
+        patch_a=None,
+        patch_b=None,
+        connectionstyle: str = 'arc3,rad=0.0',
+    ):
+        """Draw a styled directed arrow using FancyArrowPatch with optional patch clipping."""
+        style = self._EDGE_STYLES.get(relation, {
+            'color': self._COLORS['edge'], 'style': '-', 'alpha': 0.5, 'width': 1.0
+        })
+        arrow = FancyArrowPatch(
+            posA=pos_a, posB=pos_b,
+            patchA=patch_a, patchB=patch_b,
+            arrowstyle="-|>,head_width=0.25,head_length=0.20",
+            connectionstyle=connectionstyle,
+            color=style['color'],
+            lw=style['width'],
+            alpha=style['alpha'],
+            linestyle=style['style'],
+            mutation_scale=18,
+            zorder=2,
+        )
+        ax.add_patch(arrow)
+        return arrow
 
     def _draw_cycle_box(
         self, ax: plt.Axes,
@@ -975,25 +1004,19 @@ class DAGCreator:
         figsize: Optional[Tuple[float, float]] = None,
         title: Optional[str] = None,
     ) -> plt.Figure:
-        """
-        Collapsed view: all state variables at each time step summarized into
-        one 'Player State' node. Treatment and outcome are single nodes.
-        Produces the clean, communication-ready diagram for papers/presentations.
-        """
+        """Collapsed view: all state variables summarized into one 'Player State' node."""
         m = self.metadata
 
-        # Adaptive layout constants
-        total_slots = sum(m['cycle_lengths'][k - 1] + 2 for k in cycles_to_show)
+        total_slots = sum(m['cycle_lengths'][k - 1] + 1 for k in cycles_to_show)
         n_gaps = max(0, len(cycles_to_show) - 1)
-        _fig_w_target = min(28.0, max(11.0, total_slots * 1.9))
+        _fig_w_target = max(11.0, total_slots * 2.0)
         _fig_h_target = 7.0
-        _data_y_range = 4.8
-        _data_x_target = (_fig_w_target / _fig_h_target) * _data_y_range
+        _data_x_target = (_fig_w_target / _fig_h_target) * 4.8
         _denom = total_slots + n_gaps * 0.8
-        X_STEP = max(1.5, min(2.8, _data_x_target / max(1, _denom)))
-        Y_STATE = 1.8
-        Y_TREAT = -1.3
-        Y_OUTCOME = 0.25
+        X_STEP = max(1.8, min(2.8, _data_x_target / max(1, _denom)))
+        Y_STATE, Y_TREAT = 1.8, -1.3
+        # Multi-cycle: outcome at treatment level for alignment; single: midway
+        Y_OUTCOME = Y_TREAT if len(cycles_to_show) > 1 else 0.25
         CYCLE_GAP = max(1.8, X_STEP * 0.85)
         _ns = X_STEP / 2.8
         NODE_W_STATE = max(0.9, 1.80 * _ns)
@@ -1001,137 +1024,91 @@ class DAGCreator:
         NODE_W_TREAT = max(0.8, 1.55 * _ns)
         NODE_H_TREAT = 0.72
         OUTCOME_R = 0.72
-        _state_lbl = 'Player\nState' if X_STEP >= 2.0 else 'State'
-        _treat_lbl = 'Training\nIntensity' if X_STEP >= 2.0 else 'Intensity'
+        _state_lbl = 'Player\nState'
+        _treat_lbl = 'Training\nIntensity'
 
-        # First pass: compute all node positions
-        baseline_pos: Dict[int, Tuple[float, float]] = {}
-        outcome_pos:  Dict[int, Tuple[float, float]] = {}
-        state_pos:    Dict[Tuple[int, int], Tuple[float, float]] = {}
-        treat_pos:    Dict[Tuple[int, int], Tuple[float, float]] = {}
+        outcome_pos: Dict[int, Tuple[float, float]] = {}
+        state_pos: Dict[Tuple[int, int], Tuple[float, float]] = {}
+        treat_pos: Dict[Tuple[int, int], Tuple[float, float]] = {}
         cycle_extents: Dict[int, Tuple[float, float]] = {}
 
         x_cursor = 0.0
         for k in cycles_to_show:
             n_days = m['cycle_lengths'][k - 1]
             x_left = x_cursor
-
-            bx = x_cursor
-            baseline_pos[k] = (bx, Y_STATE)
-            x_cursor += X_STEP
-
             for d in range(1, n_days + 1):
-                dx = x_cursor
-                state_pos[(k, d)] = (dx, Y_STATE)
-                treat_pos[(k, d)] = (dx, Y_TREAT)
+                state_pos[(k, d)] = (x_cursor, Y_STATE)
+                treat_pos[(k, d)] = (x_cursor, Y_TREAT)
                 x_cursor += X_STEP
+            outcome_pos[k] = (x_cursor, Y_OUTCOME)
+            cycle_extents[k] = (x_left, x_cursor)
+            x_cursor += CYCLE_GAP
 
-            ox = x_cursor
-            outcome_pos[k] = (ox, Y_OUTCOME)
-            cycle_extents[k] = (x_left, ox)
-            x_cursor = ox + CYCLE_GAP
-
-        # Figure setup
         if figsize is None:
             figsize = (_fig_w_target, _fig_h_target)
-
         fig, ax = plt.subplots(figsize=figsize)
         fig.patch.set_facecolor(self._COLORS['background'])
         ax.set_facecolor(self._COLORS['background'])
 
-        # Cycle background boxes
         for k in cycles_to_show:
-            x_left, x_right = cycle_extents[k]
+            xl, xr = cycle_extents[k]
             n_days = m['cycle_lengths'][k - 1]
-            label = f"Cycle {k}   \u00b7   {n_days} training day{'s' if n_days != 1 else ''}"
-            self._draw_cycle_box(ax, x_left, x_right, Y_TREAT, Y_STATE, label, pad=0.75)
+            y_box_bot = min(Y_TREAT, Y_OUTCOME) - OUTCOME_R * 0.5
+            self._draw_cycle_box(ax, xl, xr, y_box_bot, Y_STATE,
+                                 f"Cycle {k}   \u00b7   {n_days} training day{'s' if n_days != 1 else ''}", pad=0.75)
 
-        # Edges
+        # Draw nodes and collect patches
+        sp: Dict[Tuple[int, int], Any] = {}
+        tp: Dict[Tuple[int, int], Any] = {}
+        op: Dict[int, Any] = {}
         for k in cycles_to_show:
             n_days = m['cycle_lengths'][k - 1]
-            bx, _ = baseline_pos[k]
-
             for d in range(1, n_days + 1):
                 sx, sy = state_pos[(k, d)]
                 tx, ty = treat_pos[(k, d)]
-
-                # State carryover: prev_state -> current_state
-                if d == 1:
-                    prev_sx, prev_sy = baseline_pos[k]
-                else:
-                    prev_sx, prev_sy = state_pos[(k, d - 1)]
-                self._draw_arrow(ax, prev_sx, prev_sy, sx, sy,
-                                 'state_carryover', 'arc3,rad=0.0',
-                                 shrink_a=26, shrink_b=26)
-
-                # Confounding: state -> treatment
-                self._draw_arrow(ax, sx, sy, tx, ty,
-                                 'confounding', 'arc3,rad=0.0',
-                                 shrink_a=24, shrink_b=22)
-
-                # Treatment effect: treatment -> next state
-                if d < n_days:
-                    next_sx, next_sy = state_pos[(k, d + 1)]
-                    self._draw_arrow(ax, tx, ty, next_sx, next_sy,
-                                     'treatment_effect', 'arc3,rad=-0.3',
-                                     shrink_a=22, shrink_b=26)
-
-            # Outcome edges (from final day)
+                sp[(k, d)] = self._draw_state_node(ax, sx, sy, _state_lbl, 'covariate', NODE_W_STATE, NODE_H_STATE)
+                ax.text(sx, sy + NODE_H_STATE / 2 + 0.18, 'L\u209c', ha='center', va='bottom',
+                        fontsize=11, fontstyle='italic', color=self._COLORS['text'], alpha=0.80, zorder=5)
+                tp[(k, d)] = self._draw_treatment_node(ax, tx, ty, _treat_lbl, NODE_W_TREAT, NODE_H_TREAT)
+                ax.text(tx, ty - NODE_H_TREAT / 2 - 0.30, 'A\u209c', ha='center', va='top',
+                        fontsize=11, fontstyle='italic', color=self._COLORS['text'], alpha=0.80, zorder=5)
             ox, oy = outcome_pos[k]
-            final_sx, final_sy = state_pos[(k, n_days)]
-            final_tx, final_ty = treat_pos[(k, n_days)]
-            self._draw_arrow(ax, final_sx, final_sy, ox, oy,
-                             'covariate_to_outcome', 'arc3,rad=0.2',
-                             shrink_a=26, shrink_b=30)
-            self._draw_arrow(ax, final_tx, final_ty, ox, oy,
-                             'treatment_to_outcome', 'arc3,rad=-0.2',
-                             shrink_a=22, shrink_b=30)
+            op[k] = self._draw_outcome_node(ax, ox, oy, 'Match\nPerformance', OUTCOME_R)
+            ax.text(ox, oy - OUTCOME_R - 0.22, f'Y\u2096', ha='center', va='top',
+                    fontsize=11, fontstyle='italic', color=self._COLORS['text'], alpha=0.80, zorder=5)
+
+        # Edges using FancyArrowPatch with patch clipping
+        for k in cycles_to_show:
+            n_days = m['cycle_lengths'][k - 1]
+            for d in range(1, n_days + 1):
+                sx, sy = state_pos[(k, d)]
+                tx, ty = treat_pos[(k, d)]
+                if d > 1:
+                    self._draw_fancy_arrow(ax, state_pos[(k, d - 1)], (sx, sy), 'state_carryover',
+                                           patch_a=sp[(k, d - 1)], patch_b=sp[(k, d)])
+                self._draw_fancy_arrow(ax, (sx, sy), (tx, ty), 'confounding',
+                                       patch_a=sp[(k, d)], patch_b=tp[(k, d)])
+                if d < n_days:
+                    self._draw_fancy_arrow(ax, (tx, ty), state_pos[(k, d + 1)], 'treatment_effect',
+                                           patch_a=tp[(k, d)], patch_b=sp[(k, d + 1)], connectionstyle='arc3,rad=0.3')
+            ox, oy = outcome_pos[k]
+            self._draw_fancy_arrow(ax, state_pos[(k, n_days)], (ox, oy), 'covariate_to_outcome',
+                                   patch_a=sp[(k, n_days)], patch_b=op[k], connectionstyle='arc3,rad=0.2')
+            self._draw_fancy_arrow(ax, treat_pos[(k, n_days)], (ox, oy), 'treatment_to_outcome',
+                                   patch_a=tp[(k, n_days)], patch_b=op[k], connectionstyle='arc3,rad=-0.2')
 
         # Inter-cycle feedback
-        show_indices = {k: i for i, k in enumerate(cycles_to_show)}
         for idx, k in enumerate(cycles_to_show[:-1]):
             next_k = cycles_to_show[idx + 1]
             ox, oy = outcome_pos[k]
-            nbx, nby = baseline_pos[next_k]
-            self._draw_arrow(ax, ox, oy, nbx, nby,
-                             'outcome_to_baseline', 'arc3,rad=-0.55',
-                             shrink_a=30, shrink_b=24)
+            nsx, nsy = state_pos[(next_k, 1)]
+            self._draw_fancy_arrow(ax, (ox, oy), (nsx, nsy), 'outcome_to_first_state',
+                                   patch_a=op[k], patch_b=sp[(next_k, 1)], connectionstyle='arc3,rad=-0.55')
+            n_days_k = m['cycle_lengths'][k - 1]
+            fsx, fsy = state_pos[(k, n_days_k)]
+            self._draw_fancy_arrow(ax, (fsx, fsy), (nsx, nsy), 'final_state_to_first_state',
+                                   patch_a=sp[(k, n_days_k)], patch_b=sp[(next_k, 1)], connectionstyle='arc3,rad=0.0')
 
-        # Nodes
-        for k in cycles_to_show:
-            n_days = m['cycle_lengths'][k - 1]
-            bx, by = baseline_pos[k]
-
-            # Baseline node (L0)
-            self._draw_state_node(ax, bx, by, 'Baseline\nState',
-                                  'baseline', NODE_W_STATE, NODE_H_STATE)
-            ax.text(bx, by - NODE_H_STATE / 2 - 0.18, 'L\u2080',
-                    ha='center', va='top', fontsize=8, fontstyle='italic',
-                    color=self._COLORS['text'], alpha=0.75, zorder=5)
-
-            for d in range(1, n_days + 1):
-                sx, sy = state_pos[(k, d)]
-                tx, ty = treat_pos[(k, d)]
-
-                self._draw_state_node(ax, sx, sy, _state_lbl,
-                                      'covariate', NODE_W_STATE, NODE_H_STATE)
-                ax.text(sx, sy - NODE_H_STATE / 2 - 0.18, f'L\u209c',
-                        ha='center', va='top', fontsize=8, fontstyle='italic',
-                        color=self._COLORS['text'], alpha=0.75, zorder=5)
-
-                self._draw_treatment_node(ax, tx, ty, _treat_lbl,
-                                          NODE_W_TREAT, NODE_H_TREAT)
-                ax.text(tx, ty - NODE_H_TREAT / 2 - 0.18, f'A\u209c',
-                        ha='center', va='top', fontsize=8, fontstyle='italic',
-                        color=self._COLORS['text'], alpha=0.75, zorder=5)
-
-            ox, oy = outcome_pos[k]
-            self._draw_outcome_node(ax, ox, oy, 'Match\nPerformance', OUTCOME_R)
-            ax.text(ox, oy - OUTCOME_R - 0.22, f'Y\u2096',
-                    ha='center', va='top', fontsize=8, fontstyle='italic',
-                    color=self._COLORS['text'], alpha=0.75, zorder=5)
-
-        # Title
         if title is None:
             state_str = ', '.join(m['state_vars'])
             if len(state_str) > 70:
@@ -1141,48 +1118,26 @@ class DAGCreator:
             else:
                 lengths = [m['cycle_lengths'][k - 1] for k in cycles_to_show]
                 subtitle = f"{len(cycles_to_show)} cycle(s)  \u00b7  lengths {lengths}"
-            title = (
-                f"Causal DAG \u2014 Player {m['player_id']}  \u00b7  {subtitle}\n"
-                f"State: [{state_str}]   |   Treatment: {m['daily_treatment_var']}   |   "
-                f"Outcome: {m['outcome_var']}"
-            )
-        ax.set_title(title, fontsize=10, fontweight='bold',
-                     color=self._COLORS['text'], pad=22, linespacing=1.5)
+            title = (f"Causal DAG \u2014 Player {m['player_id']}  \u00b7  {subtitle}\n"
+                     f"State: [{state_str}]   |   Treatment: {m['daily_treatment_var']}   |   Outcome: {m['outcome_var']}")
+        ax.set_title(title, fontsize=10, fontweight='bold', color=self._COLORS['text'], pad=22, linespacing=1.5)
 
-        # Legend
         from matplotlib.lines import Line2D
         legend_handles = [
-            mpatches.Patch(facecolor=self._COLORS['baseline'], edgecolor='white',
-                           label='Baseline state (L\u2080)'),
-            mpatches.Patch(facecolor=self._COLORS['covariate'], edgecolor='white',
-                           label='Time-varying state (L\u209c)'),
-            mpatches.Patch(facecolor=self._COLORS['treatment'], edgecolor='white',
-                           label='Treatment \u2014 Training Intensity (A\u209c \u2208 [0,1])'),
-            mpatches.Patch(facecolor=self._COLORS['outcome'], edgecolor='white',
-                           label='Match outcome (Y)'),
-            Line2D([0], [0], color=self._EDGE_STYLES['state_carryover']['color'],
-                   lw=1.6, label='State carry-over (L\u209c \u2192 L\u209c\u208a\u2081)'),
-            Line2D([0], [0], color=self._EDGE_STYLES['confounding']['color'],
-                   lw=1.6, linestyle='--', label='Confounding (L\u209c \u2192 A\u209c)'),
-            Line2D([0], [0], color=self._EDGE_STYLES['treatment_effect']['color'],
-                   lw=1.8, label='Treatment effect (A\u209c \u2192 L\u209c\u208a\u2081)'),
+            mpatches.Patch(facecolor=self._COLORS['covariate'], edgecolor='white', label='Player state (L\u209c)'),
+            mpatches.Patch(facecolor=self._COLORS['treatment'], edgecolor='white', label='Treatment \u2014 Training Intensity (A\u209c \u2208 [0,1])'),
+            mpatches.Patch(facecolor=self._COLORS['outcome'], edgecolor='white', label='Match outcome (Y)'),
+            Line2D([0], [0], color=self._EDGE_STYLES['state_carryover']['color'], lw=1.6, label='State carry-over (L\u209c \u2192 L\u209c\u208a\u2081)'),
+            Line2D([0], [0], color=self._EDGE_STYLES['confounding']['color'], lw=1.6, linestyle='--', label='Confounding (L\u209c \u2192 A\u209c)'),
+            Line2D([0], [0], color=self._EDGE_STYLES['treatment_effect']['color'], lw=1.8, label='Treatment effect (A\u209c \u2192 L\u209c\u208a\u2081)'),
         ]
         if len(cycles_to_show) > 1:
-            legend_handles.append(
-                Line2D([0], [0], color=self._EDGE_STYLES['outcome_to_baseline']['color'],
-                       lw=2.2, label='Inter-cycle feedback (Y\u2096 \u2192 L\u2080\u2096\u208a\u2081)')
-            )
-
-        ax.legend(
-            handles=legend_handles,
-            loc='lower right',
-            fontsize=7.5,
-            framealpha=0.92,
-            edgecolor='#C0CCD8',
-            fancybox=True,
-            ncol=2,
-            columnspacing=1.0,
-        )
+            legend_handles.extend([
+                Line2D([0], [0], color=self._EDGE_STYLES['outcome_to_first_state']['color'], lw=2.2, label='Inter-cycle feedback (Y\u2096 \u2192 L\u2081)'),
+                Line2D([0], [0], color=self._EDGE_STYLES['final_state_to_first_state']['color'], lw=1.8, label='Final state carry-over (L\u209c \u2192 L\u2081)'),
+            ])
+        ax.legend(handles=legend_handles, loc='lower right', fontsize=7.5, framealpha=0.92,
+                  edgecolor='#C0CCD8', fancybox=True, ncol=2, columnspacing=1.0)
 
         ax.axis('off')
         ax.margins(0.10)
@@ -1214,9 +1169,9 @@ class DAGCreator:
         n_state = len(m['state_vars'])
 
         # Adaptive layout constants
-        total_slots = sum(m['cycle_lengths'][k - 1] + 2 for k in cycles_to_show)
+        total_slots = sum(m['cycle_lengths'][k - 1] + 1 for k in cycles_to_show)
         n_gaps = max(0, len(cycles_to_show) - 1)
-        _fig_w_target = min(36.0, max(14.0, total_slots * 2.4))
+        _fig_w_target = max(14.0, total_slots * 2.5)
         _fig_h_target = max(8.0, n_state * 1.6 + 4.5)
         _data_y_range = n_state * 1.4 + 3.5
         _data_x_target = (_fig_w_target / _fig_h_target) * _data_y_range
@@ -1231,11 +1186,15 @@ class DAGCreator:
         NODE_W = max(1.0, 1.6 * X_STEP / 3.5)
         NODE_H = 0.70
         TREAT_W = max(0.9, 1.4 * X_STEP / 3.5)
-        TREAT_H = 0.62
+        TREAT_H = 0.78    # Taller to accommodate wrapped text
         OUTCOME_R = 0.72
 
         GROUP_PAD_X = 0.30   # Padding around the state group box (x)
         GROUP_PAD_Y = 0.32   # Padding around the state group box (y)
+
+        # Multi-cycle: outcome at treatment level for alignment; single: midway
+        _multi = len(cycles_to_show) > 1
+        Y_OUTCOME_DETAIL = Y_TREAT if _multi else (Y_STATE_TOP + Y_TREAT) / 2
 
         # Build unified position dict: node_name -> (x, y)
         pos: Dict[str, Tuple[float, float]] = {}
@@ -1246,14 +1205,7 @@ class DAGCreator:
             n_days = m['cycle_lengths'][k - 1]
             x_left = x_cursor
 
-            # Baseline (t=0)
-            bx = x_cursor
-            for i, var in enumerate(m['state_vars']):
-                node = self._node_name(var, k, 0)
-                pos[node] = (bx, Y_STATE_TOP - i * Y_SPACING)
-            x_cursor += X_STEP
-
-            # Training days (t=1..N)
+            # Training days (t=1..N) — no separate baseline; day 1 IS the cycle start
             for d in range(1, n_days + 1):
                 dx = x_cursor
                 for i, var in enumerate(m['state_vars']):
@@ -1266,14 +1218,14 @@ class DAGCreator:
             # Outcome
             ox = x_cursor
             outcome_node = self._outcome_node_name(m['outcome_var'], k)
-            pos[outcome_node] = (ox, (Y_STATE_TOP + Y_TREAT) / 2)
+            pos[outcome_node] = (ox, Y_OUTCOME_DETAIL)
 
             # Cycle extents for background box
             cycle_extents[k] = (
                 x_left,
                 ox,
                 Y_TREAT - TREAT_H / 2 - GROUP_PAD_Y - 0.5,
-                Y_STATE_TOP + NODE_H / 2 + GROUP_PAD_Y + 1.0
+                Y_STATE_TOP + NODE_H / 2 + GROUP_PAD_Y + 1.4
             )
             x_cursor = ox + CYCLE_GAP
 
@@ -1293,10 +1245,14 @@ class DAGCreator:
                                  f"Cycle {k}  \u00b7  {n_days} training day{'s' if n_days != 1 else ''}",
                                  pad=0.5)
 
-        # --- State group boxes (one per time step) ---
+        # --- State group boxes (one per time step, all covariate role) ---
+        _sub_digits = '\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089'
+        def _to_sub(n):
+            return ''.join(_sub_digits[int(c)] for c in str(n))
+
         for k in cycles_to_show:
             n_days = m['cycle_lengths'][k - 1]
-            for d in range(0, n_days + 1):
+            for d in range(1, n_days + 1):
                 state_nodes_at_d = [
                     self._node_name(var, k, d) for var in m['state_vars']
                 ]
@@ -1305,99 +1261,102 @@ class DAGCreator:
                 y_top_box  = max(ys) + NODE_H / 2 + GROUP_PAD_Y
                 y_bot_box  = min(ys) - NODE_H / 2 - GROUP_PAD_Y
                 box_width  = NODE_W + 2 * GROUP_PAD_X
-                role = 'baseline' if d == 0 else 'covariate'
-                self._draw_state_group_box(ax, x, y_bot_box, y_top_box, box_width, role)
+                self._draw_state_group_box(ax, x, y_bot_box, y_top_box, box_width, 'covariate')
 
-                # Label below each group box: L0, L1, L2, ...
-                lbl = f'L\u2080' if d == 0 else f'L\u209c'
-                ax.text(x, y_bot_box - 0.15, lbl,
-                        ha='center', va='top', fontsize=8, fontstyle='italic',
-                        color=self._get_node_color(role), alpha=0.85, zorder=5)
-
-                # "Player State" / "Baseline State" caption above the group box
-                cap = 'Baseline\nState' if d == 0 else 'Player\nState'
-                ax.text(x, y_top_box + 0.10, cap,
+                # "Player State" caption above the group box
+                ax.text(x, y_top_box + 0.10, 'Player\nState',
                         ha='center', va='bottom', fontsize=6.5,
-                        color=self._get_node_color(role), alpha=0.60, zorder=5,
+                        color=self._get_node_color('covariate'), alpha=0.60, zorder=5,
                         linespacing=1.2)
 
-        # --- Edges ---
-        shown_nodes = set(pos.keys())
-        for u, v, data in G.edges(data=True):
-            if u not in shown_nodes or v not in shown_nodes:
-                continue
-            # Only draw edges involving cycles we are showing
-            u_cycle = G.nodes[u].get('cycle')
-            v_cycle = G.nodes[v].get('cycle')
-            if u_cycle not in cycles_to_show and v_cycle not in cycles_to_show:
-                continue
+                # Subscript label ABOVE the caption
+                lbl = f'L{_to_sub(d)}'
+                ax.text(x, y_top_box + 0.65, lbl,
+                        ha='center', va='bottom', fontsize=8, fontstyle='italic',
+                        color=self._get_node_color('covariate'), alpha=0.85, zorder=5)
 
-            relation = data.get('relation', 'unknown')
-            x1, y1 = pos[u]
-            x2, y2 = pos[v]
-
-            # Choose connection style
-            if relation == 'outcome_to_baseline':
-                conn = 'arc3,rad=-0.5'
-            elif relation == 'confounding':
-                conn = 'arc3,rad=0.0'
-            elif relation == 'treatment_effect':
-                conn = 'arc3,rad=-0.25'
-            elif relation == 'state_carryover':
-                # For cross-variable carryover: add slight curve based on var indices
-                u_var = G.nodes[u].get('variable', '')
-                v_var = G.nodes[v].get('variable', '')
-                u_idx = m['state_vars'].index(u_var) if u_var in m['state_vars'] else 0
-                v_idx = m['state_vars'].index(v_var) if v_var in m['state_vars'] else 0
-                diff = v_idx - u_idx
-                rad = 0.0 + diff * 0.15   # Same var: flat; cross-var: slight arc
-                conn = f'arc3,rad={rad:.2f}'
-            else:
-                conn = 'arc3,rad=0.10'
-
-            self._draw_arrow(ax, x1, y1, x2, y2, relation, conn,
-                             shrink_a=16, shrink_b=16)
-
-        # --- Nodes ---
+        # --- Draw nodes and collect patches for FancyArrowPatch clipping ---
+        node_patches: Dict[str, Any] = {}
+        _fs_state = 6.0   # font size for state variable nodes
+        _fs_treat = 6.0   # font size for treatment nodes
+        _fs_outcome = 6.5  # font size for outcome node
         for k in cycles_to_show:
             n_days = m['cycle_lengths'][k - 1]
 
-            for d in range(0, n_days + 1):
-                role = 'baseline' if d == 0 else 'covariate'
+            for d in range(1, n_days + 1):
                 for i, var in enumerate(m['state_vars']):
                     node = self._node_name(var, k, d)
                     if node not in pos:
                         continue
                     x, y = pos[node]
                     short = var.replace(' (z)', '').replace(' Yesterday', '')
-                    if len(short) > 12:
-                        short = short[:11] + '\u2026'
-                    self._draw_state_node(ax, x, y, short, role, NODE_W, NODE_H)
+                    short = self._wrap_label(short, max_chars=12)
+                    node_patches[node] = self._draw_state_node(
+                        ax, x, y, short, 'covariate', NODE_W, NODE_H,
+                        fontsize=_fs_state)
 
-                # Treatment node (not at baseline t=0)
-                if d > 0:
-                    treat_node = self._node_name(m['daily_treatment_var'], k, d)
-                    if treat_node in pos:
-                        tx, ty = pos[treat_node]
-                        treat_short = m['daily_treatment_var']
-                        if len(treat_short) > 12:
-                            treat_short = treat_short[:11] + '\u2026'
-                        self._draw_treatment_node(ax, tx, ty, treat_short, TREAT_W, TREAT_H)
-                        ax.text(tx, ty - TREAT_H / 2 - 0.12, f'A{d}',
-                                ha='center', va='top', fontsize=7, fontstyle='italic',
-                                color=self._COLORS['text'], alpha=0.75, zorder=5)
+                # Treatment node
+                treat_node = self._node_name(m['daily_treatment_var'], k, d)
+                if treat_node in pos:
+                    tx, ty = pos[treat_node]
+                    treat_short = self._wrap_label(
+                        m['daily_treatment_var'], max_chars=16)
+                    node_patches[treat_node] = self._draw_treatment_node(
+                        ax, tx, ty, treat_short, TREAT_W, TREAT_H,
+                        fontsize=_fs_treat)
+                    ax.text(tx, ty - TREAT_H / 2 - 0.30, f'A{_to_sub(d)}',
+                            ha='center', va='top', fontsize=7, fontstyle='italic',
+                            color=self._COLORS['text'], alpha=0.75, zorder=5)
 
             # Outcome node
             outcome_node = self._outcome_node_name(m['outcome_var'], k)
             if outcome_node in pos:
                 ox, oy = pos[outcome_node]
-                out_short = m['outcome_var']
-                if len(out_short) > 12:
-                    out_short = out_short[:11] + '\u2026'
-                self._draw_outcome_node(ax, ox, oy, out_short, OUTCOME_R)
-                ax.text(ox, oy - OUTCOME_R - 0.18, f'Y{k}',
+                out_short = self._wrap_label(m['outcome_var'], max_chars=16)
+                node_patches[outcome_node] = self._draw_outcome_node(
+                    ax, ox, oy, out_short, OUTCOME_R, fontsize=_fs_outcome)
+                ax.text(ox, oy - OUTCOME_R - 0.18, f'Y{_to_sub(k)}',
                         ha='center', va='top', fontsize=8, fontstyle='italic',
                         color=self._COLORS['text'], alpha=0.75, zorder=5)
+
+        # --- Edges using FancyArrowPatch with patch clipping ---
+        shown_nodes = set(pos.keys())
+        for u, v, data in G.edges(data=True):
+            if u not in shown_nodes or v not in shown_nodes:
+                continue
+            u_cycle = G.nodes[u].get('cycle')
+            v_cycle = G.nodes[v].get('cycle')
+            if u_cycle not in cycles_to_show and v_cycle not in cycles_to_show:
+                continue
+
+            relation = data.get('relation', 'unknown')
+
+            # Choose connection style
+            if relation == 'outcome_to_first_state':
+                conn = 'arc3,rad=-0.5'
+            elif relation == 'final_state_to_first_state':
+                conn = 'arc3,rad=0.0'
+            elif relation == 'confounding':
+                conn = 'arc3,rad=0.0'
+            elif relation == 'treatment_effect':
+                conn = 'arc3,rad=-0.25'
+            elif relation == 'state_carryover':
+                u_var = G.nodes[u].get('variable', '')
+                v_var = G.nodes[v].get('variable', '')
+                u_idx = m['state_vars'].index(u_var) if u_var in m['state_vars'] else 0
+                v_idx = m['state_vars'].index(v_var) if v_var in m['state_vars'] else 0
+                diff = v_idx - u_idx
+                rad = 0.0 + diff * 0.15
+                conn = f'arc3,rad={rad:.2f}'
+            else:
+                conn = 'arc3,rad=0.10'
+
+            self._draw_fancy_arrow(
+                ax, pos[u], pos[v], relation,
+                patch_a=node_patches.get(u),
+                patch_b=node_patches.get(v),
+                connectionstyle=conn,
+            )
 
         # --- Title ---
         if title is None:
@@ -1419,21 +1378,26 @@ class DAGCreator:
         # --- Legend ---
         from matplotlib.lines import Line2D
         legend_handles = [
-            mpatches.Patch(facecolor=self._COLORS['baseline'], edgecolor='white',
-                           label='Baseline state (L\u2080)'),
             mpatches.Patch(facecolor=self._COLORS['covariate'], edgecolor='white',
-                           label='Daily state (L\u209c)'),
+                           label='Player state (L\u209c)'),
             mpatches.Patch(facecolor=self._COLORS['treatment'], edgecolor='white',
                            label='Treatment (A\u209c)'),
             mpatches.Patch(facecolor=self._COLORS['outcome'], edgecolor='white',
                            label='Match outcome (Y)'),
             Line2D([0], [0], color=self._EDGE_STYLES['state_carryover']['color'],
-                   lw=1.4, label='State carry-over'),
+                   lw=1.4, label='State carry-over (L\u209c \u2192 L\u209c\u208a\u2081)'),
             Line2D([0], [0], color=self._EDGE_STYLES['confounding']['color'],
                    lw=1.4, linestyle='--', label='Confounding (L\u209c \u2192 A\u209c)'),
             Line2D([0], [0], color=self._EDGE_STYLES['treatment_effect']['color'],
                    lw=1.8, label='Treatment effect (A\u209c \u2192 L\u209c\u208a\u2081)'),
         ]
+        if len(cycles_to_show) > 1:
+            legend_handles.extend([
+                Line2D([0], [0], color=self._EDGE_STYLES['outcome_to_first_state']['color'],
+                       lw=2.2, label='Inter-cycle feedback (Y\u2096 \u2192 L\u2081)'),
+                Line2D([0], [0], color=self._EDGE_STYLES['final_state_to_first_state']['color'],
+                       lw=1.8, label='Final state carry-over (L\u209c \u2192 L\u2081)'),
+            ])
         ax.legend(handles=legend_handles, loc='lower right', fontsize=7.5,
                   framealpha=0.92, edgecolor='#C0CCD8', fancybox=True, ncol=2)
 
@@ -1469,11 +1433,10 @@ class DAGCreator:
         for info in m['per_cycle']:
             k = info['cycle']
             n = info['n_days']
-            total = (info['n_baseline_nodes'] + info['n_covariate_nodes']
+            total = (info['n_covariate_nodes']
                      + info['n_treatment_nodes'] + info['n_outcome_nodes'])
             lines.append(
                 f"  Cycle {k} ({n:>2d} days):  "
-                f"{info['n_baseline_nodes']} baseline | "
                 f"{info['n_covariate_nodes']:>3d} covariate | "
                 f"{info['n_treatment_nodes']:>2d} treatment | "
                 f"1 outcome  =  {total} nodes"

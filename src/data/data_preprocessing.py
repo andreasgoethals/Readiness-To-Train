@@ -985,13 +985,14 @@ def add_any_acwr_danger(df):
     # Only use columns that actually exist in the data
     acwr_cols = [c for c in acwr_cols if c in df.columns]
 
-    # Create a boolean DataFrame: True (1) where each ACWR > 1.5 danger threshold
-    danger_flags = pd.DataFrame()
-    for col in acwr_cols:
-        danger_flags[col] = (df[col] > 1.5).astype(int)
-
-    # max(axis=1): if ANY column is 1 → the row is 1 (logical OR across columns)
-    df['Any ACWR Danger'] = danger_flags.max(axis=1)
+    # Check which ACWR values exceed the 1.5 danger threshold (Gabbett 2016).
+    # NaN ACWR → unknown danger status, NOT "safe". If ALL four ACWR columns are
+    # NaN for a row, the result is NaN (unknown) rather than 0 (safe).
+    acwr_df = df[acwr_cols]
+    danger_flags = acwr_df.gt(1.5)                      # NaN > 1.5 → False (per pandas)
+    all_nan = acwr_df.isna().all(axis=1)                 # True when ALL ACWR are NaN
+    df['Any ACWR Danger'] = danger_flags.any(axis=1).astype(int)
+    df.loc[all_nan, 'Any ACWR Danger'] = np.nan          # Unknown, not safe
 
     n_danger = df['Any ACWR Danger'].sum()
     print(f"  Added Any ACWR Danger ({n_danger:,} observations in danger zone)")

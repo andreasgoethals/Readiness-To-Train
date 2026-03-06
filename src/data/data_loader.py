@@ -185,6 +185,11 @@ class ReadinessDataLoader:
         if not self.data_path.exists():
             print(f"Processed data not found at: {self.data_path}")
             print("Running preprocessing pipeline...")
+            import sys
+            # Ensure data_preprocessing can be found regardless of execution context
+            _parent = str(Path(__file__).parent)
+            if _parent not in sys.path:
+                sys.path.insert(0, _parent)
             from data_preprocessing import preprocess_data
             df = preprocess_data()
             print("Preprocessing complete. Data loaded.")
@@ -660,10 +665,12 @@ class ReadinessDataLoader:
                 fill_value = 0
                 imputation_info[col] = {'strategy': 'zero', 'value': 0}
             elif strategy == 'forward_fill':
-                # Carry last valid value forward; if still NaN (start of series), fill with 0
-                train_df[col] = train_df[col].ffill().fillna(0)
-                val_df[col] = val_df[col].ffill().fillna(0)
-                test_df[col] = test_df[col].ffill().fillna(0)
+                # Carry last valid value forward WITHIN each player (prevents
+                # cross-player contamination when rows are interleaved by date).
+                # If still NaN after ffill (start of a player's series), fill with 0.
+                train_df[col] = train_df.groupby('Player ID')[col].ffill().fillna(0)
+                val_df[col] = val_df.groupby('Player ID')[col].ffill().fillna(0)
+                test_df[col] = test_df.groupby('Player ID')[col].ffill().fillna(0)
                 imputation_info[col] = {'strategy': 'forward_fill', 'value': None}
                 continue  # Skip the fillna below (already handled)
             elif strategy == 'drop':
@@ -755,10 +762,12 @@ class ReadinessDataLoader:
                 fill_value = 'missing'
                 imputation_info[col] = {'strategy': 'constant', 'value': 'missing'}
             elif strategy == 'forward_fill':
-                # Carry last valid category forward; fill remaining with 'missing'
-                train_df[col] = train_df[col].ffill().fillna('missing')
-                val_df[col] = val_df[col].ffill().fillna('missing')
-                test_df[col] = test_df[col].ffill().fillna('missing')
+                # Carry last valid category forward WITHIN each player (prevents
+                # cross-player contamination when rows are interleaved by date).
+                # If still NaN after ffill (start of a player's series), fill with 'missing'.
+                train_df[col] = train_df.groupby('Player ID')[col].ffill().fillna('missing')
+                val_df[col] = val_df.groupby('Player ID')[col].ffill().fillna('missing')
+                test_df[col] = test_df.groupby('Player ID')[col].ffill().fillna('missing')
                 imputation_info[col] = {'strategy': 'forward_fill', 'value': None}
                 continue
             elif strategy == 'drop':
@@ -1309,9 +1318,13 @@ class ReadinessDataLoader:
             drop_cols.extend(treatment_columns)
         df_lagged = df_lagged.dropna(subset=drop_cols).copy()
 
-        # Ensure target remains integer for classification tasks
+        # After shifting, a binary target (0/1) becomes float due to NaN introduction.
+        # Restore integer type ONLY if the values are genuinely integer-like (e.g., 0.0/1.0).
+        # This preserves continuous targets (e.g., match-day performance) for causal DTR.
         if target_horizon > 0 and df_lagged[target_variable].dtype == float:
-            df_lagged[target_variable] = df_lagged[target_variable].astype(int)
+            vals = df_lagged[target_variable].dropna()
+            if len(vals) > 0 and (vals == vals.astype(int)).all():
+                df_lagged[target_variable] = df_lagged[target_variable].astype(int)
 
         # =====================================================================
         # Step 6: *** SPLIT FIRST *** — THE MOST CRITICAL STEP

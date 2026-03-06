@@ -116,29 +116,37 @@ For **lagged features**, the data loader creates player-grouped shifted values (
 Readiness-To-Train/
 │
 ├── Project Overview.pdf              # Research overview document (root)
+├── CLAUDE.md                         # This documentation file
+├── README.md                         # Repository readme
+├── LICENSE                           # License file
+├── requirements.txt                  # Python dependencies
+├── .gitignore                        # Git ignore rules
 │
 ├── data/
-│   ├── raw/                          # Original data files
-│   │   ├── Readiness_Data.csv        # Raw player monitoring data (4,239 rows × 24 cols)
-│   │   ├── Raw Data Dictionary.pdf   # Raw data documentation
+│   ├── raw/                          # Original data files (all xlsx)
+│   │   ├── Readiness_Data1.xlsx      # Readiness data season 1 (4,239 rows × 24 cols, 27 players)
+│   │   ├── Readiness_Data2.xlsx      # Readiness data extended (6,781 rows × 24 cols, 27 players)
+│   │   ├── Raw_Data.xlsx             # Full GPS/HR/wellness data (9,968 rows × 38 cols, 84 players)
+│   │   ├── Sessions.xlsx             # Session metadata (1,206 rows × 8 cols)
+│   │   ├── Games.xlsx                # Match performance data (403 rows × 8 cols, 25 players)
+│   │   ├── Raw Data Dictionary.pdf   # Auto-generated raw data documentation
 │   │   └── NDA.pdf                   # Non-disclosure agreement
-│   └── processed/                    # Preprocessed data
+│   └── processed/                    # Preprocessed data (auto-generated)
 │       ├── Readiness_Data.csv        # Cleaned & feature-engineered data (4,239 rows × 36 cols)
 │       └── Processed Data Dictionary.pdf  # Auto-generated variable documentation
 │
-├── images/                           # Generated DAG visualizations (per player)
-│   ├── 1/                            # Player 1's DAGs
-│   │   ├── player_1_cycle_1_schematic.png
-│   │   ├── player_1_cycle_1_detailed.png
-│   │   ├── player_1_all_cycles_schematic.png
-│   │   └── player_1_all_cycles_detailed.png
-│   ├── 2/ ... 27/                    # Players 2-27
+├── images/                           # Generated visualizations
+│   └── DAGs/                         # Causal DAG visualizations (per player)
+│       ├── player 1/                 # Player 1's DAGs
+│       │   ├── player_1_cycle_1_schematic.png
+│       │   ├── player_1_cycle_1_detailed.png
+│       │   ├── player_1_all_cycles_schematic.png
+│       │   └── player_1_all_cycles_detailed.png
+│       └── player 2/ ... player 27/  # Players 2-27
 │
 ├── notebooks/
 │   ├── Experiment1.ipynb             # Model comparison experiments
-│   ├── Processed_Data_Exploration.ipynb  # Comprehensive EDA notebook
-│   ├── Raw_Data_Exploration.ipynb    # Raw data exploration
-│   └── Raw_Player_Level_Analysis.ipynb   # Player-level raw data analysis
+│   └── raw_data_visualisation.ipynb  # Comprehensive raw data EDA (all 5 datasets)
 │
 ├── scripts/
 │   ├── Experiment1.py                # Configurable multi-model experiment runner
@@ -146,6 +154,7 @@ Readiness-To-Train/
 │
 ├── src/
 │   ├── data/
+│   │   ├── csv_conversion.py         # Excel → CSV conversion utility
 │   │   ├── data_preprocessing.py     # Data cleaning & feature engineering
 │   │   └── data_loader.py            # Dataset creation with lags & splits
 │   │
@@ -155,10 +164,7 @@ Readiness-To-Train/
 │       ├── XGBoost.py                # XGBoost model
 │       └── CatBoost.py              # CatBoost model with native categorical handling
 │
-├── results/                          # Model outputs and saved figures
-│
-├── CLAUDE.md                         # This documentation file
-└── requirements.txt                  # Python dependencies
+└── results/                          # Model outputs and saved figures
 ```
 
 ---
@@ -167,16 +173,94 @@ Readiness-To-Train/
 
 ### Data Asset Overview
 
-| Metric | Value |
-|--------|-------|
-| Observations | 4,239 |
-| Variables (raw) | 24 |
-| Variables (processed) | 36 |
-| Temporal Span | 156 days (Jun-Nov 2025) |
-| Unique Players | 27 |
-| Granularity | Daily (one row per player per day) |
+The project draws on **5 raw Excel datasets** from OH Leuven's player monitoring system. The preprocessing pipeline currently operates on Readiness_Data1 only; the remaining datasets are available for exploratory analysis and future integration.
 
-### Feature Categories
+| Dataset | Rows | Columns | Players | Date Range | Granularity |
+|---------|------|---------|---------|------------|-------------|
+| **Readiness_Data1.xlsx** | 4,239 | 24 | 27 | 2025-06-24 → 2025-11-27 (156 days) | Daily (player-day) |
+| **Readiness_Data2.xlsx** | 6,781 | 24 | 27 | 2024-07-02 → 2026-02-17 (596 days) | Daily (player-day) |
+| **Raw_Data.xlsx** | 9,968 | 38 | 84 | 2024-05-02 → 2026-03-01 | Session-level (player-session) |
+| **Sessions.xlsx** | 1,206 | 8 | — | 2024-05-02 → 2026-03-01 | Session-level (team-session) |
+| **Games.xlsx** | 403 | 8 | 25 | 2025-07-27 → 2026-02-28 | Match-level (player-match) |
+
+**Processed dataset** (auto-generated from Readiness_Data1): 4,239 rows × 36 columns.
+
+#### Player Overlap Across Datasets
+
+- Readiness_Data1 ∩ Readiness_Data2: **26** shared players (1 unique to each)
+- Readiness_Data1 ∩ Raw_Data: **27** (all Readiness_Data1 players appear in Raw_Data)
+- Raw_Data has 84 total players (57 not in the readiness datasets)
+- Games has 25 players, **23** overlap with Readiness_Data1
+- All 4 player-level datasets overlap: **23** players
+
+### Raw Dataset Schemas
+
+#### Readiness_Data1.xlsx / Readiness_Data2.xlsx (identical columns)
+
+Both share the same 24-column structure — Readiness_Data2 is the extended temporal version.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| Date | datetime | Observation date |
+| Playerkey | string | Hashed player identifier |
+| POS | string | Playing position |
+| MA% | string (%) | Medical availability last 14 days |
+| Att% | string (%) | Club attendance last 14 days |
+| TD, HSD, Dec >3ms², Sprints | float | ACWR (7:42 day EMA ratio) for GPS metrics |
+| Reason | string | Activity reason (Training, Game, Recovery, etc.) |
+| Comment | string | Free-text coaching/medical note |
+| TD%, HSD%, Dec >3ms²%, Sprints%, Max Velocity% | float | GPS metrics as % of personal match benchmarks |
+| rpe (z) | float | Perceived exertion z-score |
+| Status | string | Medical status (Available / Attention / Injured / Sick / Absent) |
+| Fatigue (z), Readiness (z), Soreness (z) | float | Physical wellness z-scores (28-day rolling) |
+| Sleep Quality (z), Stress (z), Mood (z) | float | Mental wellness z-scores (28-day rolling) |
+
+#### Raw_Data.xlsx (38 columns)
+
+Detailed session-level GPS, heart rate, and subjective wellness data for 84 players.
+
+| Column Group | Columns | Description |
+|--------------|---------|-------------|
+| Identifiers | Date_Value, start_date_time, playerkey, teamkey | Session date/time and player/team keys |
+| Session Info | sessiontitle, drill_title, Reason, Comment, Detail | Session type and coaching notes |
+| Duration | total_game_minutes, total_minutes | Minutes played / session duration |
+| GPS Load | total_player_load, total_distance, high_speed_distance, distance_zone4, distance_zone5 | External load metrics |
+| Speed/Accel | high_speed_runs, very_high_speed_runs, accelerations_zone4, decelerations_zone4, max_speed | High-intensity running and acceleration |
+| Metabolic | high_metabolic_load_distance | Metabolic load distance |
+| Subjective | RPE, stress_level, mood, hours_sleep, sleep_quality, readiness, muscle_soreness | Self-reported wellness (raw scores, not z-scored) |
+| Heart Rate | avg_heartrate, heart_rate_exertion, max_heartrate, time_in_heartrate_zone1–6 | HR monitoring across 6 intensity zones |
+
+#### Sessions.xlsx (8 columns)
+
+Team-level session metadata (no player-level data).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| Date_Value | datetime | Session date |
+| teamkey | string | Team identifier |
+| matchday | int | 1 if match day, 0 otherwise |
+| start_date_time | datetime | Session start timestamp |
+| session_title | string | Session name |
+| session_type | string | Type (e.g., Training, Match, Recovery) |
+| workout_type | string | Workout classification |
+| Reason | string | Session reason |
+
+#### Games.xlsx (8 columns)
+
+Match-level performance data per player.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| Team | string | Team name |
+| date | datetime | Match date |
+| match_week | int | Match week number |
+| Game | string | Match description (opponent, competition) |
+| High Intensity Per BIP (m) | float | High-intensity distance per Ball-In-Play minute |
+| HIT Efforts per BIP | float | High-intensity efforts per Ball-In-Play minute |
+| minutes_played | float | Total minutes played |
+| playernames.playerkey | string | Hashed player identifier |
+
+### Feature Categories (Processed Dataset)
 
 | Category | Features | Encoding |
 |----------|----------|----------|
@@ -190,7 +274,7 @@ Readiness-To-Train/
 
 The preprocessing pipeline transforms raw data into analysis-ready format.
 
-**Input:** `data/raw/Readiness_Data.csv`
+**Input:** `data/raw/Readiness_Data1.xlsx` (via `csv_conversion.py` → `data/raw/Readiness_Data.csv`)
 **Output:** `data/processed/Readiness_Data.csv` + PDF data dictionary
 
 **Transformations:**
@@ -381,11 +465,11 @@ model = XGBoostModel(
 The `DAGCreator` class is **player-specific**: instantiated once per player, it auto-loads that player's data, auto-detects match cycle boundaries, and builds the full longitudinal DAG for all cycles in the data. It is **variable-name agnostic** — all variable names are provided by the caller, nothing is hardcoded.
 
 **Key concepts:**
-- **State variables** (`state_vars`): Player state Lₜ — used as baseline (t0) and daily covariates (t1..tN). Represent the player's condition: wellness z-scores, ACWR, composite scores, temporal context.
+- **State variables** (`state_vars`): Player state Lₜ — daily covariates (t=1..N) in each cycle. The first state (t=1) represents the player's condition at cycle start. Represent the player's condition: wellness z-scores, ACWR, composite scores, temporal context.
 - **Treatment** (`treatment_var`): Daily training intensity Aₜ — a continuous score [0,1] derived from GPS metrics normalised against individual match benchmarks.
 - **Outcome** (`outcome_var`): Match-day performance Y — physical intensity per minute played (continuous, to be maximised).
 - **Player-specific cycles**: Cycle boundaries are detected from the player's own `Activity Type Today == 'Game'` rows. Days where the team plays but the player is NOT selected simply extend the current cycle — they are not treated as a match boundary for that player.
-- **`cross_var_carryover`**: If `True`, every state variable at time t causally influences all state variables at t+1 (N² edges). If `False` (default), each variable only influences itself at t+1 (N edges). Applied consistently to both baseline→day1 and day→day+1 transitions.
+- **`cross_var_carryover`**: If `True`, every state variable at time t causally influences all state variables at t+1 (N² edges). If `False` (default), each variable only influences itself at t+1 (N edges). Applied consistently to all day→day+1 transitions within each cycle.
 
 **Constructor:**
 ```python
@@ -409,13 +493,13 @@ creator = DAGCreator(
 
 | Edge type | Meaning |
 | --------- | ------- |
-| `baseline_to_covariate` | L₀ → L₁ (initial conditions propagate into the cycle) |
 | `confounding` | Lₜ → Aₜ (coaches prescribe based on player state — selection bias) |
 | `treatment_effect` | Aₜ → Lₜ₊₁ (training changes fatigue, soreness, adaptation) |
 | `state_carryover` | Lₜ → Lₜ₊₁ (state persistence; scope controlled by `cross_var_carryover`) |
 | `treatment_to_outcome` | Aₜ → Y (final session effect on match performance) |
 | `covariate_to_outcome` | Lₜ → Y (final state effect on match performance) |
-| `outcome_to_baseline` | Y_k → L₀_{k+1} (match toll feeds back into next cycle's baseline) |
+| `outcome_to_first_state` | Y_k → L₁_{k+1} (match toll feeds back into next cycle's first state) |
+| `final_state_to_first_state` | L_final_k → L₁_{k+1} (final player state carries over to next cycle) |
 
 **Query methods:** `get_nodes_by_role()`, `get_nodes_at_time()`, `get_nodes_in_cycle()`, `get_nodes_at_cycle_day()`, `get_cycle_outcome()`, `get_feedback_edges()`, `get_parents()`, `get_children()`, `get_edges_by_relation()`, `get_time_varying_confounders()`, `to_adjacency_matrix()`, `summary()`
 
@@ -426,7 +510,7 @@ creator.visualize(
     cycles=None,          # None=all cycles, int=one cycle index, List[int]=subset
     completeness='schematic',  # 'schematic' or 'detailed'
     save_path='results/dag_schematic.png',  # Explicit path (takes precedence)
-    output_dir='images/1/',                 # Directory with auto-generated filename
+    output_dir='images/DAGs/player 1/',             # Directory with auto-generated filename
     dpi=150,
     show=True
 )
@@ -437,15 +521,15 @@ If `output_dir` is provided and `save_path` is not, the filename is auto-generat
 
 **`completeness` options:**
 
-- **`'schematic'`**: Collapsed view — all state variables summarized into a single "Player State" / "Baseline State" node per time step. Clean, publication-ready.
-- **`'detailed'`**: Full expanded view — every individual variable shown as a separate node, enclosed by a labeled "Player State" / "Baseline State" bounding box per time step.
+- **`'schematic'`**: Collapsed view — all state variables summarized into a single "Player State" node per time step. Clean, publication-ready.
+- **`'detailed'`**: Full expanded view — every individual variable shown as a separate node, enclosed by a labeled "Player State" bounding box per time step.
 
 **Visual encoding:**
-- **Teal ellipse**: Baseline state L₀
-- **Blue ellipse**: Daily player state Lₜ (covariates)
+- **Blue ellipse**: Player state Lₜ (covariates)
 - **Amber rectangle**: Treatment Aₜ (training intensity [0,1])
 - **Crimson diamond**: Match outcome Y (performance)
-- **Purple arrow**: Inter-cycle feedback (outcome → next baseline)
+- **Purple arrow**: Inter-cycle feedback (outcome → next cycle's first state)
+- **Teal arrow**: Final state carry-over (last player state → next cycle's first state)
 - **Dashed amber arrow**: Confounding (state → treatment, selection bias)
 - **Red arrow**: Treatment effect (Aₜ → Lₜ₊₁)
 - **Blue arrow**: State carry-over (Lₜ → Lₜ₊₁)
@@ -456,8 +540,8 @@ If `output_dir` is provided and `save_path` is not, the filename is auto-generat
 creator.visualize(cycles=None, completeness='schematic', save_path='results/dag_all.png')
 
 # Auto-generated filename in output directory
-creator.visualize(cycles=1, completeness='detailed', output_dir='images/1/')
-# -> saves as images/1/player_1_cycle_1_detailed.png
+creator.visualize(cycles=1, completeness='detailed', output_dir='images/DAGs/player 1/')
+# -> saves as images/DAGs/player 1/player_1_cycle_1_detailed.png
 
 # Query the DAG object
 adj = creator.to_adjacency_matrix()
@@ -540,10 +624,18 @@ results = model.train()
 print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 ```
 
+### Notebooks
+
+| Notebook | Purpose |
+|----------|---------|
+| `Experiment1.ipynb` | Interactive model comparison experiments (LogReg, XGBoost, CatBoost) |
+| `raw_data_visualisation.ipynb` | Comprehensive EDA across all 5 raw datasets: missingness analysis, dataset linkage (Venn diagrams, ER diagram), temporal coverage, wellness/GPS distributions, player profiles (radar charts), and cross-dataset correlation analysis |
+
 ### Running from Command Line
 
 ```bash
 cd "path/to/Readiness-To-Train"
+python src/data/csv_conversion.py             # Convert xlsx to csv (if needed)
 python src/data/data_preprocessing.py         # Run preprocessing
 python src/methods/LogReg.py                  # Run Logistic Regression
 python src/methods/XGBoost.py                 # Run XGBoost
@@ -656,7 +748,7 @@ results = run_experiment(
 
 ```python
 from scripts.Generate_Visualizations import generate_all_player_dags
-generate_all_player_dags()  # Generates 4 DAGs per player into images/<player_id>/
+generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/player <id>/
 ```
 
 ---
@@ -749,6 +841,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-02-26
+**Last Updated:** 2026-03-06
 **Python Version:** 3.8+
-**Key Dependencies:** pandas, numpy, scikit-learn, xgboost, catboost, optuna, matplotlib, seaborn, reportlab, networkx
+**Key Dependencies:** pandas, numpy, scipy, scikit-learn, xgboost, catboost, optuna, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2

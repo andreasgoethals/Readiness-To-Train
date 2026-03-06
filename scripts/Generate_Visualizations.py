@@ -11,15 +11,15 @@ DAGCreator. Creates four DAGs per player:
 4. All cycles, detailed (full longitudinal view with all covariates)
 
 Output structure:
-    images/
-    ├── 1/
+    images/DAGs/
+    ├── player 1/
     │   ├── player_1_cycle_1_schematic.png
     │   ├── player_1_cycle_1_detailed.png
     │   ├── player_1_all_cycles_schematic.png
     │   └── player_1_all_cycles_detailed.png
-    ├── 2/
+    ├── player 2/
     │   └── ...
-    └── 27/
+    └── player 27/
         └── ...
 
 Usage:
@@ -54,7 +54,7 @@ STATE_VARS = [
 TREATMENT = 'Training Intensity Score'
 OUTCOME = 'Match Performance'
 
-IMAGES_DIR = project_root / 'images'
+IMAGES_DIR = project_root / 'images' / 'DAGs'
 DATA_PATH = project_root / 'data' / 'processed' / 'Readiness_Data.csv'
 
 
@@ -68,10 +68,10 @@ def generate_all_player_dags(
     outcome_var=OUTCOME,
     images_dir=IMAGES_DIR,
     data_path=DATA_PATH,
-    dpi=150,
+    dpi=300,
 ):
     """
-    Generate four DAG visualizations per player and save to images/<player_id>/.
+    Generate four DAG visualizations per player and save to images/player <player_id>/.
 
     Parameters
     ----------
@@ -86,7 +86,7 @@ def generate_all_player_dags(
     data_path : Path or str
         Path to the processed CSV data file.
     dpi : int
-        Resolution for saved images.
+        Resolution for saved images (default 300 for publication quality).
     """
     images_dir = Path(images_dir)
     data_path = Path(data_path)
@@ -103,7 +103,7 @@ def generate_all_player_dags(
     print(f"Found {len(player_ids)} players: {player_ids}")
 
     for pid in player_ids:
-        player_dir = images_dir / str(pid)
+        player_dir = images_dir / f"player {pid}"
         player_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n{'=' * 60}")
