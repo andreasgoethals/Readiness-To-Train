@@ -134,7 +134,7 @@ class DAGCreator:
     outcome_var : str
         Outcome variable name Y. Match-day physical performance metric.
     data_path : str or Path, optional
-        Path to processed CSV. Defaults to data/processed/Readiness_Data.csv
+        Path to processed data file. Defaults to data/processed/RTT.xlsx
         relative to the project root.
     cross_var_carryover : bool, default=False
         If False: self-only carryover -- each state variable at t only directly
@@ -199,7 +199,7 @@ class DAGCreator:
         if data_path is None:
             script_dir = Path(__file__).parent
             project_root = script_dir.parent.parent
-            data_path = project_root / "data" / "processed" / "Readiness_Data.csv"
+            data_path = project_root / "data" / "processed" / "RTT.xlsx"
 
         data_path = Path(data_path)
         if not data_path.exists():
@@ -208,7 +208,11 @@ class DAGCreator:
                 "Run src/data/data_preprocessing.py first."
             )
 
-        df = pd.read_csv(data_path, parse_dates=['Date'])
+        # Support both .xlsx and .csv
+        if str(data_path).endswith('.xlsx'):
+            df = pd.read_excel(data_path, parse_dates=['Date'], engine='openpyxl')
+        else:
+            df = pd.read_csv(data_path, parse_dates=['Date'])
         player_df = df[df['Player ID'] == self.player_id].copy()
 
         if len(player_df) == 0:

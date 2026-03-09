@@ -2,8 +2,8 @@
 Data Loader for Readiness Prediction Models
 Handles loading, lagging, temporal splitting, and preprocessing of data.
 
-Takes the processed CSV and creates ML-ready train/val/test splits with
-all the transformations needed for model training.
+Takes the processed dataset (RTT.xlsx) and creates ML-ready train/val/test
+splits with all the transformations needed for model training.
 
 === CAPABILITIES ===
 
@@ -111,8 +111,8 @@ class ReadinessDataLoader:
     """
     Data loader for readiness prediction models.
 
-    Handles the complete data pipeline from processed CSV to ML-ready
-    train/val/test splits with proper anti-leakage measures.
+    Handles the complete data pipeline from processed data (RTT.xlsx) to
+    ML-ready train/val/test splits with proper anti-leakage measures.
 
     Supports flexible variable selection:
     - Covariates (X): any columns via `predictory_columns`
@@ -126,7 +126,7 @@ class ReadinessDataLoader:
     Attributes
     ----------
     data_path : Path
-        Path to the processed CSV file.
+        Path to the processed data file (RTT.xlsx).
     df : pd.DataFrame or None
         Loaded DataFrame (set after _verify_and_load_data is called).
     categorical_features : list
@@ -148,14 +148,14 @@ class ReadinessDataLoader:
         Parameters
         ----------
         data_path : str, optional
-            Path to processed CSV. If None, uses default location
-            (data/processed/Readiness_Data.csv relative to project root).
+            Path to processed data file. If None, uses default location
+            (data/processed/RTT.xlsx relative to project root).
         """
         if data_path is None:
             # Navigate from src/data/ → src/ → project_root/
             script_dir = Path(__file__).parent
             project_root = script_dir.parent.parent
-            self.data_path = project_root / "data" / "processed" / "Readiness_Data.csv"
+            self.data_path = project_root / "data" / "processed" / "RTT.xlsx"
         else:
             self.data_path = Path(data_path)
 
@@ -171,8 +171,8 @@ class ReadinessDataLoader:
         """
         Verify processed data exists and load it.
 
-        If the processed CSV does not exist yet (e.g., first run), this
-        method automatically triggers the preprocessing pipeline from
+        If the processed data file does not exist yet (e.g., first run),
+        this method automatically triggers the preprocessing pipeline from
         data_preprocessing.py to generate it. This provides a seamless
         experience where users can call create_dataset() without manually
         running preprocessing first.
@@ -194,7 +194,11 @@ class ReadinessDataLoader:
             df = preprocess_data()
             print("Preprocessing complete. Data loaded.")
         else:
-            df = pd.read_csv(self.data_path, parse_dates=['Date'])
+            # Support both .xlsx and .csv for backwards compatibility
+            if str(self.data_path).endswith('.xlsx'):
+                df = pd.read_excel(self.data_path, parse_dates=['Date'], engine='openpyxl')
+            else:
+                df = pd.read_csv(self.data_path, parse_dates=['Date'])
 
         return df
 

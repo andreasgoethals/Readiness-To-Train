@@ -83,11 +83,14 @@ TIMELINE FOR A SINGLE ROW (date t):
     ├─────────────────┤    ├──────────────────────┤    ├──────────────────┤
     │ Act Type Yest.   │    │ Wellness z-scores     │    │ Activity Type     │
     │ GPS % Yesterday  │    │ Status                │    │   Today           │
-    │ ACWR Yesterday   │    │ Status Decrease       │    │ Training Intensity│
-    │ Comment Yest.    │    │ Days Since Game       │    │   Score [0,1]     │
-    │ RPE Yesterday    │    │ Days Until Match      │    │                   │
-    │ Med Availability │    │ Physical/Mental State │    │ (post-assessment) │
+    │ Training Intens. │    │ Status Decrease       │    │ Selected          │
+    │ ACWR Yesterday   │    │ Days Since Game       │    │                   │
+    │ Comment Yest.    │    │ Days Until Match      │    │ (post-assessment) │
+    │ RPE Yesterday    │    │ Match Day (schedule)  │    │                   │
+    │ Med Availability │    │ Physical/Mental State │    │                   │
     │ Club Attendance  │    │ Overall Wellbeing     │    │                   │
+    │ Raw GPS/HR Yest. │    │                       │    │                   │
+    │ Match Perf Yest. │    │                       │    │                   │
     └─────────────────┘    └──────────────────────┘    └──────────────────┘
          FULLY KNOWN            MORNING DATA              POST-ASSESSMENT
          at day start           measured before            session decided AFTER
@@ -98,9 +101,10 @@ TIMELINE FOR A SINGLE ROW (date t):
 
 1. **Activity Type Today / Training Intensity is a post-assessment variable** — it is determined AFTER the morning assessment and derived from the next row's Activity Type Yesterday (t+1 data). It should not be used as a predictor in standard ML since it is not available at prediction time. It must be used via `treatment_columns` for causal analysis.
 2. **Days Since Game is NEVER 0** — it counts days since the last *completed* OHL first-team game (Activity Type = exactly "Game"). On match day, the game hasn't happened yet when the morning assessment occurs, so it counts since the *previous* match. Minimum value is 1. "Youth training or game" and "National team training/game" are NOT counted as matches.
-3. **Days Until Match CAN be 0** — on match day itself, Days Until Match = 0. Only OHL first-team matches are counted. Internally, `Days Until Match` is computed using `Activity Type Today` (a post-assessment variable), but this is safe because preprocessing uses the full dataset after the fact; at inference time, Days Until Match is computed separately from the match schedule (which is known in advance).
-4. **Yesterday's data describes t-1** — all "Yesterday" columns contain data from the day before the row's date.
-5. **Wellness z-scores are individualized** — each player's z-scores are relative to their own 28-day rolling baseline, NOT the team average.
+3. **Days Until Match CAN be 0** — on match day itself, Days Until Match = 0 **for selected players only**. Unselected players' DUM points to the next match they play (player-level semantics). Only OHL first-team matches are counted. Internally, `Days Until Match` is computed using `Activity Type Today` (a post-assessment variable), but this is safe because preprocessing uses the full dataset after the fact; at inference time, Days Until Match is computed separately from the match schedule (which is known in advance).
+4. **Match Day is schedule information, not post-assessment** — although derived from Activity Type Today in preprocessing, Match Day represents the team's match schedule (known in advance from the fixture list). It is classified as a morning (t) variable and is safe to use as a predictor. Only `Activity Type Today` and `Selected` are truly post-assessment variables.
+5. **Yesterday's data describes t-1** — all "Yesterday" columns contain data from the day before the row's date.
+6. **Wellness z-scores are individualized** — each player's z-scores are relative to their own 28-day rolling baseline, NOT the team average.
 
 ### Between-Row Temporal Structure
 
@@ -132,8 +136,8 @@ Readiness-To-Train/
 │   │   ├── Raw Data Dictionary.pdf   # Auto-generated raw data documentation
 │   │   └── NDA.pdf                   # Non-disclosure agreement
 │   └── processed/                    # Preprocessed data (auto-generated)
-│       ├── Readiness_Data.csv        # Cleaned & feature-engineered data (4,239 rows × 36 cols)
-│       └── Processed Data Dictionary.pdf  # Auto-generated variable documentation
+│       ├── RTT.xlsx                  # Multi-dataset merged & feature-engineered (4,239 rows × 45 cols)
+│       └── RTT Data Dictionary.pdf   # Auto-generated variable documentation
 │
 ├── images/                           # Generated visualizations
 │   └── DAGs/                         # Causal DAG visualizations (per player)
@@ -154,8 +158,7 @@ Readiness-To-Train/
 │
 ├── src/
 │   ├── data/
-│   │   ├── csv_conversion.py         # Excel → CSV conversion utility
-│   │   ├── data_preprocessing.py     # Data cleaning & feature engineering
+│   │   ├── data_preprocessing.py     # Multi-dataset merge & feature engineering
 │   │   └── data_loader.py            # Dataset creation with lags & splits
 │   │
 │   └── methods/
@@ -183,7 +186,7 @@ The project draws on **5 raw Excel datasets** from OH Leuven's player monitoring
 | **Sessions.xlsx** | 1,206 | 8 | — | 2024-05-02 → 2026-03-01 | Session-level (team-session) |
 | **Games.xlsx** | 403 | 8 | 25 | 2025-07-27 → 2026-02-28 | Match-level (player-match) |
 
-**Processed dataset** (auto-generated from Readiness_Data1): 4,239 rows × 36 columns.
+**Processed dataset** (auto-generated from all datasets): 4,239 rows × 45 columns → `data/processed/RTT.xlsx`
 
 #### Player Overlap Across Datasets
 
@@ -260,52 +263,61 @@ Match-level performance data per player.
 | minutes_played | float | Total minutes played |
 | playernames.playerkey | string | Hashed player identifier |
 
-### Feature Categories (Processed Dataset)
+### Feature Categories (Processed Dataset — RTT.xlsx)
 
-| Category | Features | Encoding |
-|----------|----------|----------|
-| External Load (GPS) | Total Distance, High-Speed Distance (>19.8 km/h), Decelerations (>3 m/s²), Sprints | ACWR (7:42 EMA), % of personal match benchmarks |
-| Subjective Wellbeing | Fatigue, Soreness, Sleep Quality, Stress, Mood | Individualised 28-day rolling-window Z-scores |
-| Composite Scores | Physical State, Mental State, Overall Wellbeing | Aggregated from subjective sub-scales |
-| Contextual / Medical | Medical availability %, Club attendance %, Activity reason, Medical status | Categorical (Available / Attention / Injured / Sick / Absent) |
+| Category | Features | Encoding | Source |
+|----------|----------|----------|--------|
+| External Load (GPS) | Total Distance, High-Speed Distance, Decelerations, Sprints | ACWR (7:42 EMA), % of personal benchmarks | Readiness_Data1 |
+| Training Intensity | Training Intensity Yesterday | Composite: tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100). Soft cap, range [0, 1) | Engineered from GPS % |
+| Raw GPS/HR (Yesterday) | Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion | Absolute values, shifted +1 day | Raw_Data |
+| Match Performance (Yesterday) | High Intensity Per BIP, HIT Efforts Per BIP, Minutes Played | Continuous, only filled day after match | Games |
+| Subjective Wellbeing | Fatigue, Soreness, Sleep Quality, Stress, Mood | Individualised 28-day rolling-window Z-scores | Readiness_Data1 |
+| Composite Scores | Physical State, Mental State, Overall Wellbeing | Aggregated from subjective sub-scales | Engineered |
+| Contextual / Medical | Medical availability %, Club attendance %, Activity reason, Medical status | Categorical | Readiness_Data1 |
 | Temporal Context | Days Since Game, Days Until Match | Integer; Days Since Game ≥ 1, Days Until Match ≥ 0 |
 
 ### 1. Data Preprocessing (`data_preprocessing.py`)
 
-The preprocessing pipeline transforms raw data into analysis-ready format.
+The preprocessing pipeline merges all raw datasets into a single analysis-ready file.
 
-**Input:** `data/raw/Readiness_Data1.xlsx` (via `csv_conversion.py` → `data/raw/Readiness_Data.csv`)
-**Output:** `data/processed/Readiness_Data.csv` + PDF data dictionary
+**Input:** `data/raw/Readiness_Data1.xlsx`, `Raw_Data.xlsx`, `Sessions.xlsx`, `Games.xlsx`
+**Output:** `data/processed/RTT.xlsx` + `RTT Data Dictionary.pdf`
 
 **Transformations:**
-1. Player ID mapping (complex keys → sequential IDs 1-27)
-2. Column renaming for clarity
-3. Percentage column cleaning (string → integer)
-4. Comment categorization (recovery, discomfort, stiffness, etc.)
-5. Composite scores (Physical State, Mental State, Overall Wellbeing)
-6. Activity Type Today (session type on day t, derived from next row's Activity Type Yesterday)
-7. Days Since Game (days since last *completed* match, minimum 1, never 0)
-8. Days Until Match (days until next scheduled match, 0 on match day)
-9. Match Day (team-level: 1 if any player has an OHL first-team game on that date) and Selected (player-level: 1/0/NaN)
-10. Status Decrease detection (Available→Attention/Injured, Attention→Injured)
-11. ACWR danger zone flagging (any ACWR > 1.5)
-12. Column reordering into temporal groups
-13. Save CSV + auto-generate PDF data dictionary
+1. Load all raw xlsx files (Readiness_Data1 as base, Raw_Data, Sessions, Games)
+2. Player ID mapping (complex keys → sequential IDs 1-27)
+3. Column renaming for clarity
+4. Percentage column cleaning (string → integer)
+5. Comment categorization (recovery, discomfort, stiffness, etc.)
+6. **Merge Raw_Data** GPS/HR columns (total_minutes, total_distance, high_speed_distance, avg_heartrate, heart_rate_exertion) — aggregated per player-day (sum for volume, weighted mean for HR), shifted +1 day so day-of data becomes "yesterday"
+7. **Merge Games** match performance columns (High Intensity Per BIP, HIT Efforts Per BIP, minutes_played) — shifted +1 day (match data → day after match)
+8. Composite scores (Physical State, Mental State, Overall Wellbeing)
+9. Activity Type Today (session type on day t, derived from next row's Activity Type Yesterday)
+10. Days Since Game (days since last *completed* match, minimum 1, never 0)
+11. Days Until Match (days until next scheduled match, 0 on match day)
+12. Match Day (team-level) and Selected (player-level)
+13. Status Decrease detection
+14. ACWR danger zone flagging (any ACWR > 1.5)
+15. Training Intensity Yesterday composite (tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100), soft cap in [0, 1))
+16. Column reordering into temporal groups
+17. Save RTT.xlsx + auto-generate PDF data dictionary
 
-**Processed Dataset Columns (in order):**
+**Processed Dataset Columns (45 columns, in order):**
 
-| Group | Columns | Temporal Position |
-|-------|---------|-------------------|
-| Identifiers | Date, Playerkey, Player ID, Position | Always known |
-| Historical | Medical Availability Last 14 Days, Club Attendance Last 14 Days | Before day t |
-| Yesterday (t-1) | ACWR (×4), Any ACWR Danger, Activity Type Yesterday, Comment Yesterday, Comment Category Yesterday, GPS % (×5), Perceived Exertion Yesterday | Before day t |
-| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match | Covariates Lₜ |
-| Post-assessment (t) | Activity Type Today, Match Day, Selected | Treatment Aₜ — assigned after morning assessment (t+1 data) |
+| Group | Columns | Temporal Position | Source |
+|-------|---------|-------------------|--------|
+| Identifiers | Date, Playerkey, Player ID, Position | Always known | RD1 |
+| Historical | Medical Availability Last 14 Days, Club Attendance Last 14 Days | Before day t | RD1 |
+| Yesterday (t-1) RD1 | ACWR (×4), Any ACWR Danger, Activity Type Yesterday, Comment Yesterday, Comment Category Yesterday, GPS % (×5), Training Intensity Yesterday, Perceived Exertion Yesterday | Before day t | RD1 |
+| Yesterday (t-1) Raw | Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion | Before day t | Raw_Data (shifted) |
+| Yesterday (t-1) Games | Match High Intensity Per BIP, Match HIT Efforts Per BIP, Match Minutes Played | Before day t (only day after match) | Games (shifted) |
+| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match, Match Day | Covariates Lₜ (Match Day = schedule info, known in advance) | RD1 + Engineered |
+| Post-assessment (t) | Activity Type Today, Selected | Treatment Aₜ — assigned after morning assessment | Engineered |
 
 **Usage:**
 ```python
 from src.data.data_preprocessing import preprocess_data
-df = preprocess_data()  # Runs full pipeline
+df = preprocess_data()  # Runs full pipeline, saves RTT.xlsx
 ```
 
 ### 2. Data Loading (`data_loader.py`)
@@ -605,10 +617,21 @@ predictors = [
     'Total Distance (ACWR) Yesterday',
     'High Speed Distance (ACWR) Yesterday',
     'Any ACWR Danger',
+    'Training Intensity Yesterday',
     'Days Since Game', 'Days Until Match',
     'Medical Availability Last 14 Days',
     'Club Attendance Last 14 Days',
-    'Position', 'Activity Type Yesterday'
+    'Position', 'Activity Type Yesterday',
+    # New columns from Raw_Data (GPS/HR)
+    'Total Minutes Yesterday',
+    'Total Distance (m) Yesterday',
+    'High Speed Distance (m) Yesterday',
+    'Avg Heart Rate Yesterday',
+    'Heart Rate Exertion Yesterday',
+    # New columns from Games (match performance — only filled day after match)
+    'Match High Intensity Per BIP Yesterday',
+    'Match HIT Efforts Per BIP Yesterday',
+    'Match Minutes Played Yesterday',
 ]
 
 model = XGBoostModel(
@@ -635,8 +658,7 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 
 ```bash
 cd "path/to/Readiness-To-Train"
-python src/data/csv_conversion.py             # Convert xlsx to csv (if needed)
-python src/data/data_preprocessing.py         # Run preprocessing
+python src/data/data_preprocessing.py         # Run multi-dataset preprocessing -> RTT.xlsx
 python src/methods/LogReg.py                  # Run Logistic Regression
 python src/methods/XGBoost.py                 # Run XGBoost
 python src/methods/DAG_Creator.py             # Run DAG demos + generate visualizations
@@ -759,13 +781,16 @@ generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/playe
 
 **Not available at prediction time (must not be used as predictors):**
 - `Activity Type Today` (determined after morning assessment — t+1 data)
+- `Selected` (coach's squad decision — post-assessment)
 - Any GPS metric from today's training session
 - Training Intensity Score (post-assessment)
 
 **Available at prediction time (safe as predictors / covariates Lₜ):**
 - All wellness z-scores (morning assessment)
-- All "Yesterday" columns (fully observed at day start)
-- Days Since Game, Days Until Match (known in the morning)
+- All "Yesterday" columns from Readiness_Data1 (ACWR, GPS %, Training Intensity Yesterday, RPE, comments)
+- All "Yesterday" columns from Raw_Data (Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion)
+- All "Yesterday" columns from Games (Match High Intensity Per BIP, Match HIT Efforts Per BIP, Match Minutes Played) — only filled day after match
+- Days Since Game, Days Until Match, Match Day (known in the morning from schedule)
 - Medical Availability, Club Attendance (historical)
 - Position (static)
 
@@ -788,8 +813,9 @@ Status decreases are rare (~3-5% of observations). Both models handle this:
 | Standard ML | *not set* | - | 0 | Yesterday's load → today's status |
 | Future prediction | *not set* | - | 1 | Today's data → tomorrow's status |
 | Session type | `['Activity Type Today']` | 0 | 1 | Effect of session type on tomorrow |
-| Full prescription | `['Activity Type Today', GPS % cols]` | `{...: 0, ...: 1}` | 1 | Effect of full prescription on tomorrow |
-| Yesterday's intensity | `[GPS % Yesterday cols]` | 0 | 0 | Effect of yesterday's intensity on today |
+| Training intensity | `['Training Intensity Yesterday']` | 1 | 1 | Effect of today's intensity on tomorrow |
+| Full prescription | `['Activity Type Today', 'Training Intensity Yesterday']` | `{...: 0, ...: 1}` | 1 | Effect of full prescription on tomorrow |
+| Yesterday's intensity | `['Training Intensity Yesterday']` | 0 | 0 | Effect of yesterday's intensity on today |
 
 ### 5. Covariate Shift and Confounding
 
@@ -841,6 +867,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-03-06
+**Last Updated:** 2026-03-07
 **Python Version:** 3.8+
 **Key Dependencies:** pandas, numpy, scipy, scikit-learn, xgboost, catboost, optuna, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2

@@ -55,7 +55,7 @@ TREATMENT = 'Training Intensity Score'
 OUTCOME = 'Match Performance'
 
 IMAGES_DIR = project_root / 'images' / 'DAGs'
-DATA_PATH = project_root / 'data' / 'processed' / 'Readiness_Data.csv'
+DATA_PATH = project_root / 'data' / 'processed' / 'RTT.xlsx'
 
 
 # =========================================================================
