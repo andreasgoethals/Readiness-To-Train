@@ -1,11 +1,30 @@
 """
-Logistic Regression Model for Readiness Prediction
+TabPFN Model for Readiness Prediction
 
-Streamlined implementation with:
-- Automatic task type detection (classification vs regression)
-- Hyperparameter optimization using Optuna
-- Optimal threshold selection using Youden's J statistic
-- Returns dict only, no file I/O or print statements
+Prior-Data Fitted Networks (TabPFN v2) — a transformer pre-trained on synthetic
+tabular datasets that performs in-context learning. No explicit training loop or
+hyperparameter search is needed: the model learns from the training set in a single
+forward pass at inference time.
+
+Key properties:
+- Zero-shot/few-shot learner: fit() stores the training data; predict() runs inference
+- Works best on small-to-medium datasets (original sweet spot: < 1000 rows,
+  < 100 features), though TabPFN v2 has relaxed these limits considerably
+- Supports both classification (TabPFNClassifier) and regression (TabPFNRegressor)
+- Returns dict identical to all other models in this package
+
+Install:
+    pip install tabpfn
+
+Usage:
+    from src.models.tabpfn import TabPFNModel
+
+    model = TabPFNModel(
+        target_variable='Status Decrease',
+        predictory_columns=[...],
+        lag=3,
+    )
+    results = model.train()
 """
 
 import numpy as np
@@ -13,21 +32,68 @@ import pandas as pd
 from pathlib import Path
 import sys
 from typing import List, Dict, Optional
+import warnings
 
+# src/models/ → src/ (project root / src)
+# Adding src/ to path so 'data.data_loader' is importable
 sys.path.append(str(Path(__file__).parent.parent))
 
-from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, mean_squared_error, r2_score
 )
-import optuna
+
+try:
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    TABPFN_AVAILABLE = True
+except ImportError:
+    TABPFN_AVAILABLE = False
+    warnings.warn("TabPFN not installed. Install with: pip install tabpfn")
 
 from data.data_loader import ReadinessDataLoader
 
 
-class LogisticRegressionModel:
-    """Logistic Regression classifier/regressor with HPO and optimal threshold selection."""
+class TabPFNModel:
+    """
+    TabPFN v2 classifier/regressor with optimal threshold selection.
+
+    TabPFN uses in-context learning — no iterative training occurs. The fit() call
+    stores the training data; all computation happens during predict_proba()/predict().
+
+    Parameters
+    ----------
+    target_variable : str
+        Name of the target column.
+    predictory_columns : list of str
+        Names of predictor columns.
+    lag : int, default=0
+        Number of lag steps for temporal features (passed to data_loader).
+    include_previous_target : bool, default=False
+        Whether to include the lagged target as a predictor.
+    target_horizon : int, default=0
+        Number of time steps to shift the target forward.
+    test_size : float, default=0.2
+        Proportion of dates for the test set.
+    val_size : float, default=0.1
+        Proportion of dates for the validation set.
+    categorical_encoding : str, default='label'
+        Encoding strategy for categorical features. TabPFN handles numerics natively;
+        label-encoding categoricals is recommended.
+    missing_numeric : str, default='mean'
+        Imputation strategy for numerical features.
+    missing_categorical : str, default='mode'
+        Imputation strategy for categorical features.
+    standardize : bool, default=False
+        Whether to z-score numerical features before passing to TabPFN.
+        TabPFN normalises inputs internally, so standardising externally is optional.
+    device : str, default='auto'
+        Device for TabPFN inference ('cpu', 'cuda', or 'auto').
+    n_estimators : int, default=4
+        Number of ensembled forward passes (TabPFN v2 parameter).
+        Higher values improve stability at the cost of inference time.
+    random_state : int, default=42
+        Random seed for reproducibility.
+    """
 
     def __init__(
         self,
@@ -38,17 +104,17 @@ class LogisticRegressionModel:
         target_horizon: int = 0,
         test_size: float = 0.2,
         val_size: float = 0.1,
-        categorical_encoding: str = 'one-hot',
+        categorical_encoding: str = 'label',
         missing_numeric: str = 'mean',
         missing_categorical: str = 'mode',
-        standardize: bool = True,
-        hpo_trials: int = 50,
-        C: float = 1.0,
-        penalty: str = 'l2',
-        max_iter: int = 1000,
-        class_weight: Optional[str] = 'balanced',
+        standardize: bool = False,
+        device: str = 'auto',
+        n_estimators: int = 4,
         random_state: int = 42
     ):
+        if not TABPFN_AVAILABLE:
+            raise ImportError("TabPFN is not installed. Install with: pip install tabpfn")
+
         self.target_variable = target_variable
         self.predictory_columns = predictory_columns
         self.lag = lag
@@ -60,18 +126,14 @@ class LogisticRegressionModel:
         self.missing_numeric = missing_numeric
         self.missing_categorical = missing_categorical
         self.standardize = standardize
-        self.hpo_trials = hpo_trials
-        self.C = C
-        self.penalty = penalty
-        self.max_iter = max_iter
-        self.class_weight = class_weight
+        self.device = device
+        self.n_estimators = n_estimators
         self.random_state = random_state
 
         self.data_loader = ReadinessDataLoader()
         self.model = None
         self.data = None
         self.task_type = None
-        self.best_params = None
 
     def _detect_task_type(self, y: pd.Series) -> str:
         """Auto-detect classification vs regression."""
@@ -101,79 +163,20 @@ class LogisticRegressionModel:
         self.task_type = self._detect_task_type(self.data['y_train'])
         return self.data
 
-    def _objective(self, trial: optuna.Trial) -> float:
-        """Optuna objective function."""
-        C = trial.suggest_float('C', 0.001, 100.0, log=True)
-        penalty = trial.suggest_categorical('penalty', ['l1', 'l2'])
-        solver = 'liblinear' if penalty == 'l1' else 'lbfgs'
-
-        if self.task_type == 'classification':
-            model = LogisticRegression(
-                C=C,
-                penalty=penalty,
-                max_iter=self.max_iter,
-                class_weight=self.class_weight,
-                random_state=self.random_state,
-                solver=solver,
-                verbose=0
-            )
-        else:
-            alpha = 1.0 / C
-            model = Ridge(
-                alpha=alpha,
-                max_iter=self.max_iter,
-                random_state=self.random_state
-            )
-
-        model.fit(self.data['X_train'], self.data['y_train'])
-
-        if len(self.data['y_val']) > 0:
-            if self.task_type == 'classification':
-                # Use ROC AUC with predicted probabilities — F1 at 0.5 threshold
-                # is unreliable with severe class imbalance (~3-5% positive)
-                y_val_proba = model.predict_proba(self.data['X_val'])[:, 1]
-                if len(np.unique(self.data['y_val'])) > 1:
-                    score = roc_auc_score(self.data['y_val'], y_val_proba)
-                else:
-                    score = 0.0
-            else:
-                y_val_pred = model.predict(self.data['X_val'])
-                score = -mean_squared_error(self.data['y_val'], y_val_pred)
-        else:
-            if self.task_type == 'classification':
-                y_train_proba = model.predict_proba(self.data['X_train'])[:, 1]
-                if len(np.unique(self.data['y_train'])) > 1:
-                    score = roc_auc_score(self.data['y_train'], y_train_proba)
-                else:
-                    score = 0.0
-            else:
-                y_train_pred = model.predict(self.data['X_train'])
-                score = -mean_squared_error(self.data['y_train'], y_train_pred)
-
-        return score
-
-    def _run_hpo(self) -> Dict:
-        """Run hyperparameter optimization."""
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-        study = optuna.create_study(
-            direction='maximize',
-            sampler=optuna.samplers.TPESampler(seed=self.random_state)
-        )
-        study.optimize(self._objective, n_trials=self.hpo_trials, show_progress_bar=False)
-        self.best_params = study.best_params
-        return self.best_params
-
     def _find_optimal_threshold(self, y_true, y_pred_proba):
-        """Find optimal threshold using Youden's J statistic on validation set."""
+        """Find optimal threshold using Youden's J statistic."""
         fpr, tpr, thresholds = roc_curve(y_true, y_pred_proba)
         j_scores = tpr - fpr
         optimal_idx = np.argmax(j_scores)
-        optimal_threshold = thresholds[optimal_idx]
-        return optimal_threshold
+        return thresholds[optimal_idx]
 
     def train(self) -> Dict:
         """
         Complete training pipeline.
+
+        TabPFN performs in-context learning: no iterative optimisation occurs.
+        The fit() call simply stores the training data; inference happens at
+        predict_proba()/predict() time.
 
         Returns
         -------
@@ -181,7 +184,7 @@ class LogisticRegressionModel:
             - y_train_true, y_train_pred (probabilities for classification)
             - y_test_true, y_test_pred (probabilities for classification)
             - y_val_true, y_val_pred (probabilities for classification, if val exists)
-            - model_weights (coefficients dict)
+            - model_weights: {'feature_names': [...]}  (TabPFN has no extractable weights)
             - task_type, best_params
             - metrics: roc_auc, optimal_threshold, f1_optimal, accuracy_optimal,
                       precision_optimal, recall_optimal (for classification)
@@ -190,53 +193,41 @@ class LogisticRegressionModel:
         # Load data
         self._load_data()
 
-        # Run HPO
-        if self.hpo_trials > 0:
-            self._run_hpo()
-            C = self.best_params['C']
-            penalty = self.best_params.get('penalty', 'l2')
-        else:
-            C = self.C
-            penalty = self.penalty
-
-        # Train final model
-        solver = 'liblinear' if penalty == 'l1' else 'lbfgs'
-
+        # Instantiate TabPFN model
         if self.task_type == 'classification':
-            self.model = LogisticRegression(
-                C=C,
-                penalty=penalty,
-                max_iter=self.max_iter,
-                class_weight=self.class_weight,
-                random_state=self.random_state,
-                solver=solver,
-                verbose=0
+            self.model = TabPFNClassifier(
+                device=self.device,
+                n_estimators=self.n_estimators,
             )
         else:
-            alpha = 1.0 / C
-            self.model = Ridge(
-                alpha=alpha,
-                max_iter=self.max_iter,
-                random_state=self.random_state
+            self.model = TabPFNRegressor(
+                device=self.device,
+                n_estimators=self.n_estimators,
             )
 
+        # TabPFN fit: stores training data (no iterative learning)
         self.model.fit(self.data['X_train'], self.data['y_train'])
 
         # Generate predictions
         if self.task_type == 'classification':
             y_train_pred = self.model.predict_proba(self.data['X_train'])[:, 1]
             y_test_pred = self.model.predict_proba(self.data['X_test'])[:, 1]
-            y_val_pred = self.model.predict_proba(self.data['X_val'])[:, 1] if len(self.data['y_val']) > 0 else None
+            y_val_pred = (
+                self.model.predict_proba(self.data['X_val'])[:, 1]
+                if len(self.data['y_val']) > 0 else None
+            )
         else:
             y_train_pred = self.model.predict(self.data['X_train'])
             y_test_pred = self.model.predict(self.data['X_test'])
-            y_val_pred = self.model.predict(self.data['X_val']) if len(self.data['y_val']) > 0 else None
+            y_val_pred = (
+                self.model.predict(self.data['X_val'])
+                if len(self.data['y_val']) > 0 else None
+            )
 
-        # Extract model weights
+        # TabPFN has no extractable feature importances
         model_weights = {
-            'coefficients': self.model.coef_.tolist() if hasattr(self.model, 'coef_') else None,
-            'intercept': float(self.model.intercept_[0] if isinstance(self.model.intercept_, np.ndarray) else self.model.intercept_),
-            'feature_names': self.data['feature_names']
+            'feature_names': self.data['feature_names'],
+            'note': 'TabPFN is a black-box transformer; feature importances are not directly available.'
         }
 
         # Prepare results
@@ -247,7 +238,10 @@ class LogisticRegressionModel:
             'y_test_pred': y_test_pred,
             'model_weights': model_weights,
             'task_type': self.task_type,
-            'best_params': self.best_params if self.hpo_trials > 0 else {'C': C, 'penalty': penalty}
+            'best_params': {
+                'device': self.device,
+                'n_estimators': self.n_estimators,
+            }
         }
 
         # Add validation predictions if available
@@ -267,7 +261,6 @@ class LogisticRegressionModel:
                     self.data['y_train'].values, y_train_pred
                 )
 
-            # Apply optimal threshold to test predictions
             y_test_pred_binary = (y_test_pred >= optimal_threshold).astype(int)
 
             metrics = {
@@ -279,7 +272,6 @@ class LogisticRegressionModel:
                 'recall_optimal': recall_score(self.data['y_test'].values, y_test_pred_binary, zero_division=0)
             }
         else:
-            # Regression metrics
             metrics = {
                 'mse': mean_squared_error(self.data['y_test'].values, y_test_pred),
                 'rmse': np.sqrt(mean_squared_error(self.data['y_test'].values, y_test_pred)),
@@ -292,39 +284,27 @@ class LogisticRegressionModel:
 
 
 if __name__ == "__main__":
-    # Example usage
-    # NOTE: Activity Type Today is determined AFTER the morning assessment
-    # (it is derived from the next row's Activity Type Yesterday). It should
-    # NOT be included as a predictor since it is not available at prediction time.
-    # Only variables known at the time of the morning assessment are valid predictors.
     predictors = [
-        # Morning wellness assessment (covariates)
         'Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
         'Physical State', 'Sleep Quality (z)', 'Stress (z)',
         'Mood (z)', 'Mental State', 'Overall Wellbeing',
-        # Yesterday's workload data (fully known)
         'Total Distance (ACWR) Yesterday',
         'High Speed Distance (ACWR) Yesterday',
-        'Any ACWR Danger',
-        # Temporal features (known at morning assessment)
-        'Days Since Game', 'Days Until Match',
-        # Historical context
+        'Any ACWR Danger', 'Days Since Game', 'Days Until Match',
         'Medical Availability Last 14 Days',
         'Club Attendance Last 14 Days',
-        # Player profile
-        'Position',
-        # Previous day's activity (known — it already happened)
-        'Activity Type Yesterday'
+        'Position', 'Activity Type Yesterday'
     ]
 
-    model = LogisticRegressionModel(
+    model = TabPFNModel(
         target_variable='Status Decrease',
         predictory_columns=predictors,
         lag=3,
         include_previous_target=True,
         test_size=0.2,
         val_size=0.1,
-        hpo_trials=50
+        device='auto',
+        n_estimators=4,
     )
 
     results = model.train()

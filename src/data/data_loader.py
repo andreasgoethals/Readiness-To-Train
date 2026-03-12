@@ -2,8 +2,8 @@
 Data Loader for Readiness Prediction Models
 Handles loading, lagging, temporal splitting, and preprocessing of data.
 
-Takes the processed dataset (RTT.xlsx) and creates ML-ready train/val/test
-splits with all the transformations needed for model training.
+Takes the processed Excel file (RTT.xlsx) and creates ML-ready train/val/test splits with
+all the transformations needed for model training.
 
 === CAPABILITIES ===
 
@@ -111,8 +111,8 @@ class ReadinessDataLoader:
     """
     Data loader for readiness prediction models.
 
-    Handles the complete data pipeline from processed data (RTT.xlsx) to
-    ML-ready train/val/test splits with proper anti-leakage measures.
+    Handles the complete data pipeline from processed Excel (RTT.xlsx) to ML-ready
+    train/val/test splits with proper anti-leakage measures.
 
     Supports flexible variable selection:
     - Covariates (X): any columns via `predictory_columns`
@@ -126,7 +126,7 @@ class ReadinessDataLoader:
     Attributes
     ----------
     data_path : Path
-        Path to the processed data file (RTT.xlsx).
+        Path to the processed Excel file (RTT.xlsx).
     df : pd.DataFrame or None
         Loaded DataFrame (set after _verify_and_load_data is called).
     categorical_features : list
@@ -148,7 +148,7 @@ class ReadinessDataLoader:
         Parameters
         ----------
         data_path : str, optional
-            Path to processed data file. If None, uses default location
+            Path to processed Excel file. If None, uses default location
             (data/processed/RTT.xlsx relative to project root).
         """
         if data_path is None:
@@ -171,8 +171,8 @@ class ReadinessDataLoader:
         """
         Verify processed data exists and load it.
 
-        If the processed data file does not exist yet (e.g., first run),
-        this method automatically triggers the preprocessing pipeline from
+        If the processed Excel file does not exist yet (e.g., first run), this
+        method automatically triggers the preprocessing pipeline from
         data_preprocessing.py to generate it. This provides a seamless
         experience where users can call create_dataset() without manually
         running preprocessing first.
@@ -185,50 +185,13 @@ class ReadinessDataLoader:
         if not self.data_path.exists():
             print(f"Processed data not found at: {self.data_path}")
             print("Running preprocessing pipeline...")
-            import sys
-            # Ensure data_preprocessing can be found regardless of execution context
-            _parent = str(Path(__file__).parent)
-            if _parent not in sys.path:
-                sys.path.insert(0, _parent)
             from data_preprocessing import preprocess_data
             df = preprocess_data()
             print("Preprocessing complete. Data loaded.")
         else:
-            # Support both .xlsx and .csv for backwards compatibility
-            if str(self.data_path).endswith('.xlsx'):
-                df = pd.read_excel(self.data_path, parse_dates=['Date'], engine='openpyxl')
-            else:
-                df = pd.read_csv(self.data_path, parse_dates=['Date'])
+            df = pd.read_excel(self.data_path, parse_dates=['Date'])
 
         return df
-
-    def load_processed_data(self) -> pd.DataFrame:
-        """
-        Return the raw processed DataFrame (before ML splits or encoding).
-
-        Use this to share the same in-memory data with DAGCreator so that
-        both the causal structure (DAGCreator) and the ML pipeline
-        (ReadinessDataLoader) operate on the same source. Example::
-
-            loader = ReadinessDataLoader()
-            processed_df = loader.load_processed_data()
-
-            from src.methods.DAG_Creator import DAGCreator
-            creator = DAGCreator(
-                player_id=1,
-                state_vars=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)'],
-                treatment_var='Training Intensity Score',
-                outcome_var='Match Performance',
-                player_df=processed_df,   # share the already-loaded data
-            )
-
-        Returns
-        -------
-        pd.DataFrame
-            Full processed dataset (all players), as loaded from disk,
-            with Date parsed as datetime.
-        """
-        return self._verify_and_load_data()
 
     def _merge_activity_categories(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -669,12 +632,10 @@ class ReadinessDataLoader:
                 fill_value = 0
                 imputation_info[col] = {'strategy': 'zero', 'value': 0}
             elif strategy == 'forward_fill':
-                # Carry last valid value forward WITHIN each player (prevents
-                # cross-player contamination when rows are interleaved by date).
-                # If still NaN after ffill (start of a player's series), fill with 0.
-                train_df[col] = train_df.groupby('Player ID')[col].ffill().fillna(0)
-                val_df[col] = val_df.groupby('Player ID')[col].ffill().fillna(0)
-                test_df[col] = test_df.groupby('Player ID')[col].ffill().fillna(0)
+                # Carry last valid value forward; if still NaN (start of series), fill with 0
+                train_df[col] = train_df[col].ffill().fillna(0)
+                val_df[col] = val_df[col].ffill().fillna(0)
+                test_df[col] = test_df[col].ffill().fillna(0)
                 imputation_info[col] = {'strategy': 'forward_fill', 'value': None}
                 continue  # Skip the fillna below (already handled)
             elif strategy == 'drop':
@@ -766,12 +727,10 @@ class ReadinessDataLoader:
                 fill_value = 'missing'
                 imputation_info[col] = {'strategy': 'constant', 'value': 'missing'}
             elif strategy == 'forward_fill':
-                # Carry last valid category forward WITHIN each player (prevents
-                # cross-player contamination when rows are interleaved by date).
-                # If still NaN after ffill (start of a player's series), fill with 'missing'.
-                train_df[col] = train_df.groupby('Player ID')[col].ffill().fillna('missing')
-                val_df[col] = val_df.groupby('Player ID')[col].ffill().fillna('missing')
-                test_df[col] = test_df.groupby('Player ID')[col].ffill().fillna('missing')
+                # Carry last valid category forward; fill remaining with 'missing'
+                train_df[col] = train_df[col].ffill().fillna('missing')
+                val_df[col] = val_df[col].ffill().fillna('missing')
+                test_df[col] = test_df[col].ffill().fillna('missing')
                 imputation_info[col] = {'strategy': 'forward_fill', 'value': None}
                 continue
             elif strategy == 'drop':
@@ -1322,13 +1281,9 @@ class ReadinessDataLoader:
             drop_cols.extend(treatment_columns)
         df_lagged = df_lagged.dropna(subset=drop_cols).copy()
 
-        # After shifting, a binary target (0/1) becomes float due to NaN introduction.
-        # Restore integer type ONLY if the values are genuinely integer-like (e.g., 0.0/1.0).
-        # This preserves continuous targets (e.g., match-day performance) for causal DTR.
+        # Ensure target remains integer for classification tasks
         if target_horizon > 0 and df_lagged[target_variable].dtype == float:
-            vals = df_lagged[target_variable].dropna()
-            if len(vals) > 0 and (vals == vals.astype(int)).all():
-                df_lagged[target_variable] = df_lagged[target_variable].astype(int)
+            df_lagged[target_variable] = df_lagged[target_variable].astype(int)
 
         # =====================================================================
         # Step 6: *** SPLIT FIRST *** — THE MOST CRITICAL STEP

@@ -14,6 +14,8 @@ from pathlib import Path
 import sys
 from typing import List, Dict, Optional
 
+# src/models/ → src/ (project root / src)
+# Adding src/ to path so 'data.data_loader' is importable
 sys.path.append(str(Path(__file__).parent.parent))
 
 import xgboost as xgb

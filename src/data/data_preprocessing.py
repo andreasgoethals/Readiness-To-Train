@@ -1,6 +1,6 @@
 """
 Data Preprocessing Pipeline — Multi-Dataset Integration
-Combines Readiness_Data1, Raw_Data, Sessions, and Games into a single
+Combines Readiness_Data, Raw_Data, Sessions, and Games into a single
 analysis-ready dataset (RTT.xlsx) with feature engineering.
 
 This module loads raw xlsx files from the OHL player monitoring system, merges
@@ -9,8 +9,8 @@ from day t becomes "yesterday" data in the row for day t+1), engineers features,
 and saves the result as an Excel workbook plus a PDF data dictionary.
 
 Pipeline Summary (executed in order by preprocess_data()):
-    1.  Load all raw xlsx files (Readiness_Data1, Raw_Data, Sessions, Games)
-    2.  Map complex Playerkey strings -> simple sequential Player IDs (1-27)
+    1.  Load all raw xlsx files (Readiness_Data, Raw_Data, Sessions, Games)
+    2.  Map complex Playerkey strings -> simple sequential Player IDs (1-28)
     3.  Rename cryptic column abbreviations -> human-readable names
     4.  Clean percentage columns (string -> integer conversion)
     5.  Categorize free-text comments into keyword-based categories
@@ -24,8 +24,10 @@ Pipeline Summary (executed in order by preprocess_data()):
     11. Detect status decrease transitions
     12. Flag dangerous ACWR values (>1.5)
     13. Create Training Intensity Yesterday composite (tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100), range [0, 1))
-    14. Reorder columns into temporal groups
-    15. Save RTT.xlsx + auto-generate PDF data dictionary
+    14. Cap GPS benchmark % variables at a configurable ceiling (default 250%)
+    15. Filter dataset to a configurable date range (default 2025-07-27 -> 2026-02-28)
+    16. Reorder columns into temporal groups
+    17. Save RTT.xlsx + auto-generate PDF data dictionary
 
 === TEMPORAL SEMANTICS ===
 
@@ -44,13 +46,12 @@ different temporal positions:
 
 === DATA SOURCES ===
 
-Readiness_Data1.xlsx  — Base dataset. ALL 4,239 rows retained.
-Raw_Data.xlsx         — Session-level GPS/HR. Filtered to RD1 players & dates,
+Readiness_Data.xlsx   — Base dataset. ALL rows retained before date filter.
+Raw_Data.xlsx         — Session-level GPS/HR. Filtered to RD players & dates,
                         aggregated per player-day (sum for load, weighted mean
                         for HR), then shifted forward 1 day.
-Sessions.xlsx         — Team-level session metadata. Used only for match day
-                        identification via matchday == "MD 0".
-Games.xlsx            — Match performance data. Filtered to RD1 players & dates,
+Sessions.xlsx         — Team-level session metadata. Loaded for reference.
+Games.xlsx            — Match performance data. Filtered to RD players & dates,
                         shifted forward 1 day (match data -> next row).
 """
 
@@ -89,8 +90,8 @@ def load_all_raw_data():
     """
     raw_dir = get_project_root() / "data" / "raw"
 
-    print("Loading Readiness_Data1.xlsx...")
-    rd1 = pd.read_excel(raw_dir / "Readiness_Data1.xlsx", engine='openpyxl')
+    print("Loading Readiness_Data.xlsx...")
+    rd1 = pd.read_excel(raw_dir / "Readiness_Data.xlsx", engine='openpyxl')
     rd1['Date'] = pd.to_datetime(rd1['Date'])
     print(f"  {rd1.shape[0]:,} rows x {rd1.shape[1]} columns, "
           f"{rd1['Playerkey'].nunique()} players")
@@ -116,7 +117,7 @@ def load_all_raw_data():
 
 
 # =============================================================================
-# BASIC TRANSFORMATIONS (applied to Readiness_Data1 base)
+# BASIC TRANSFORMATIONS (applied to Readiness_Data base)
 # =============================================================================
 
 def map_player_ids(df):
@@ -136,7 +137,8 @@ def map_player_ids(df):
     unique_players = sorted(df['Playerkey'].unique())
     player_mapping = {old_key: idx + 1 for idx, old_key in enumerate(unique_players)}
     df['Player ID'] = df['Playerkey'].map(player_mapping)
-    print(f"  Mapped {len(unique_players)} players to IDs 1-{len(unique_players)}")
+    n = len(unique_players)
+    print(f"  Mapped {n} players to IDs 1-{n}")
     return df, player_mapping
 
 
@@ -196,7 +198,9 @@ def categorize_comment(comment):
     """
     if pd.isna(comment) or comment == '':
         return 'empty'
+
     comment_lower = str(comment).lower()
+
     categories = {
         'recovery': ['recovery'],
         'discomfort': ['discomfort'],
@@ -205,10 +209,12 @@ def categorize_comment(comment):
         'hydrops': ['hydrops'],
         'cramp': ['cramp']
     }
+
     matches = []
     for category, keywords in categories.items():
         if any(keyword in comment_lower for keyword in keywords):
             matches.append(category)
+
     if len(matches) == 0:
         return 'other'
     elif len(matches) == 1:
@@ -248,9 +254,6 @@ def merge_raw_data(df, raw, player_mapping):
     temporal structure, this should appear as "yesterday" data. So we shift:
     Raw_Data from date t -> appears in our dataset's row at date t+1.
 
-    Implementation: we merge Raw_Data on (playerkey, Date_Value) = (Playerkey, Date - 1 day),
-    which means the Raw_Data values from yesterday are placed into today's row.
-
     When a player has multiple sessions on the same day (e.g., morning training +
     afternoon session), we aggregate:
     - SUM for volume metrics: total_minutes, total_distance, high_speed_distance
@@ -258,7 +261,6 @@ def merge_raw_data(df, raw, player_mapping):
     """
     print("\nMerging Raw_Data (GPS/HR -> shifted to yesterday)...")
 
-    # Filter to RD1 players only
     rd1_players = set(df['Playerkey'].unique())
     raw_f = raw[raw['playerkey'].isin(rd1_players)].copy()
     print(f"  Filtered Raw_Data: {len(raw_f):,} rows for {raw_f['playerkey'].nunique()} players")
@@ -270,15 +272,12 @@ def merge_raw_data(df, raw, player_mapping):
     for col in ['total_minutes', 'total_distance', 'high_speed_distance', 'avg_heartrate']:
         raw_f[col] = pd.to_numeric(raw_f[col], errors='coerce')
 
-    # Aggregate per player-day (handles multiple sessions)
-    # For HR metrics, compute weighted mean by total_minutes
+    # Aggregate per player-day
     def agg_player_day(group):
         result = {}
         result['total_minutes'] = group['total_minutes'].sum()
         result['total_distance'] = group['total_distance'].sum()
         result['high_speed_distance'] = group['high_speed_distance'].sum()
-
-        # Weighted mean for heart rate (weight by session duration)
         weights = group['total_minutes'].fillna(0)
         total_weight = weights.sum()
         if total_weight > 0:
@@ -291,19 +290,16 @@ def merge_raw_data(df, raw, player_mapping):
         else:
             result['avg_heartrate'] = group['avg_heartrate'].mean()
             result['heart_rate_exertion'] = group['heart_rate_exertion'].mean()
-
         return pd.Series(result)
 
     raw_agg = raw_f.groupby(['playerkey', 'Date_Value']).apply(
         agg_player_day, include_groups=False
     ).reset_index()
-
     print(f"  Aggregated to {len(raw_agg):,} player-day observations")
 
-    # Rename for merge — these will be "yesterday" data
     raw_agg = raw_agg.rename(columns={
         'playerkey': 'Playerkey',
-        'Date_Value': '_raw_date',     # The actual date the data was recorded
+        'Date_Value': '_raw_date',
         'total_minutes': 'Total Minutes Yesterday',
         'total_distance': 'Total Distance (m) Yesterday',
         'high_speed_distance': 'High Speed Distance (m) Yesterday',
@@ -311,11 +307,9 @@ def merge_raw_data(df, raw, player_mapping):
         'heart_rate_exertion': 'Heart Rate Exertion Yesterday',
     })
 
-    # Shift: Raw_Data from date t should appear in row at date t+1.
-    # So we create a merge key: in the base df, we look for Raw_Data from (Date - 1 day).
+    # Shift: Raw_Data from date t -> appears in row at date t+1
     df['_merge_date'] = df['Date'] - pd.Timedelta(days=1)
 
-    # Merge on Playerkey and the shifted date
     df = df.merge(
         raw_agg,
         left_on=['Playerkey', '_merge_date'],
@@ -323,10 +317,8 @@ def merge_raw_data(df, raw, player_mapping):
         how='left'
     )
 
-    # Clean up temporary columns
     df = df.drop(columns=['_merge_date', '_raw_date'], errors='ignore')
 
-    # Report coverage
     for col in ['Total Minutes Yesterday', 'Total Distance (m) Yesterday',
                 'High Speed Distance (m) Yesterday', 'Avg Heart Rate Yesterday',
                 'Heart Rate Exertion Yesterday']:
@@ -341,13 +333,9 @@ def merge_games_data(df, games):
     """
     Merge match performance data from Games.xlsx into the base dataset.
 
-    Games.xlsx records match performance ON THE MATCH DAY. In our dataset's
-    temporal structure, match data from date t should appear as "yesterday"
-    data in the row at date t+1 (because the match is a completed event
-    by the next morning assessment).
-
-    These columns are only filled on the day AFTER a match — all other rows
-    will have NaN for these fields.
+    Games.xlsx records match performance ON THE MATCH DAY. Match data from
+    date t should appear as "yesterday" data in the row at date t+1.
+    These columns are only filled on the day AFTER a match.
     """
     print("\nMerging Games data (match performance -> shifted to yesterday)...")
 
@@ -356,15 +344,14 @@ def merge_games_data(df, games):
     print(f"  Filtered Games: {len(games_f):,} rows for "
           f"{games_f['playernames.playerkey'].nunique()} players")
 
-    # Select and rename columns
     games_merge = games_f[['playernames.playerkey', 'date',
-                           'High Intensity Per BIP (m)', 'HIT Efforts per BIP',
-                           'minutes_played']].copy()
+                            'High Intensity Per BIP (m)', 'HIT Efforts per BIP',
+                            'minutes_played']].copy()
     games_merge = games_merge.rename(columns={
         'playernames.playerkey': 'Playerkey',
         'date': '_game_date',
-        'High Intensity Per BIP (m)': 'Match High Intensity Per BIP Yesterday',
-        'HIT Efforts per BIP': 'Match HIT Efforts Per BIP Yesterday',
+        'High Intensity Per BIP (m)': 'Match HID Per BIP Yesterday',
+        'HIT Efforts per BIP': 'Match HIE Per BIP Yesterday',
         'minutes_played': 'Match Minutes Played Yesterday',
     })
 
@@ -380,11 +367,23 @@ def merge_games_data(df, games):
 
     df = df.drop(columns=['_merge_date', '_game_date'], errors='ignore')
 
-    for col in ['Match High Intensity Per BIP Yesterday',
-                'Match HIT Efforts Per BIP Yesterday',
+    for col in ['Match HID Per BIP Yesterday',
+                'Match HIE Per BIP Yesterday',
                 'Match Minutes Played Yesterday']:
         n_valid = df[col].notna().sum()
         print(f"  {col}: {n_valid:,} valid entries")
+
+    # Composite outcome: geometric mean of HID and HIE per BIP, weighted by
+    # sqrt(clip(minutes_played, 15, 90) / 90)  — playing time is clamped to
+    # [15, 90]: the floor of 15 prevents very brief cameo appearances from being
+    # penalised too harshly; the ceiling of 90 gives full credit (weight=1) to
+    # anyone who played a full match.
+    df['Match Intensity Yesterday'] = (
+        np.sqrt(df['Match HID Per BIP Yesterday'] * df['Match HIE Per BIP Yesterday'])
+        * np.sqrt(np.clip(df['Match Minutes Played Yesterday'], 15, 90) / 90)
+    )
+    n_valid_mi = df['Match Intensity Yesterday'].notna().sum()
+    print(f"  Match Intensity Yesterday: {n_valid_mi:,} valid entries")
 
     return df
 
@@ -438,8 +437,8 @@ def add_activity_type_today(df):
     Only valid when the next row is exactly the next calendar day (no date gaps).
     """
     print("\nAdding Activity Type Today...")
-
     df_sorted = df.sort_values(['Player ID', 'Date']).copy()
+
     df_sorted['Activity Type Today'] = df_sorted.groupby('Player ID')[
         'Activity Type Yesterday'
     ].shift(-1)
@@ -467,14 +466,9 @@ def add_match_day_and_selected(df):
     Add 'Match Day' (team-level binary) and 'Selected' (player-level).
 
     Match Day = 1 if ANY player has Activity Type Today == 'Game' on that date.
-    Temporal note: Match Day is DERIVED from Activity Type Today (post-assessment)
-    in preprocessing, but it represents SCHEDULE information known in advance from
-    the fixture list. It is therefore classified as a morning (t) variable, not a
-    post-assessment variable. In inference, Match Day would come from the public
-    match schedule, not from Activity Type Today.
+    Selected  = 1 if THIS player's Activity Type Today == 'Game', 0 otherwise,
+                NaN on non-match days.
 
-    Selected = 1 if THIS player's Activity Type Today == 'Game', 0 if not, NaN
-    on non-match days. Selected IS truly post-assessment (coach's squad decision).
     Only exact 'Game' counts — excludes youth/national team games.
     """
     print("\nAdding Match Day and Selected...")
@@ -498,8 +492,8 @@ def add_match_day_and_selected(df):
     n_match_days = len(match_dates)
     n_selected = int(df['Selected'].sum()) if df['Selected'].notna().any() else 0
     n_not_selected = int((df['Selected'] == 0).sum())
-    print(f"  Added Match Day ({n_match_days} match days)")
-    print(f"  Added Selected ({n_selected} selections, {n_not_selected} non-selections)")
+    print(f"  Added Match Day ({n_match_days} match days identified)")
+    print(f"  Added Selected ({n_selected} selections, {n_not_selected} non-selections on match days)")
     return df
 
 
@@ -507,12 +501,11 @@ def add_days_since_game(df):
     """
     Add 'Days Since Game' — calendar days since last COMPLETED match (min=1, never 0).
 
-    Measured in the morning before any activity. On match day itself, the game
-    hasn't happened yet, so it counts since the PREVIOUS match.
-    Only exact 'Game' in Activity Type Yesterday counts (excludes youth/national).
+    Measured in the morning. On match day the game hasn't occurred yet, so the
+    count refers to the previous match. Only exact 'Game' in Activity Type
+    Yesterday counts (excludes youth/national team).
     """
     print("\nAdding Days Since Game...")
-
     df_sorted = df.sort_values(['Player ID', 'Date']).copy()
 
     def calc_days_since_game(group):
@@ -541,7 +534,7 @@ def add_days_since_game(df):
 
     n_valid = df['Days Since Game'].notna().sum()
     n_zeros = (df['Days Since Game'] == 0).sum()
-    print(f"  Added Days Since Game ({n_valid:,} valid, {n_zeros} zeros [should be 0])")
+    print(f"  Added Days Since Game ({n_valid:,} valid entries, {n_zeros} zeros [should be 0])")
     if n_zeros > 0:
         print(f"  WARNING: Found {n_zeros} zero values!")
     return df
@@ -554,7 +547,6 @@ def add_days_until_match(df):
     Derived from Activity Type Today. Only exact 'Game' counts.
     """
     print("\nAdding Days Until Match...")
-
     df_sorted = df.sort_values(['Player ID', 'Date']).copy()
 
     def calc_days_until_match(group):
@@ -596,10 +588,8 @@ def add_status_decrease(df):
 
     A status decrease is flagged (1) for these transitions:
         Available -> Attention, Available -> Injured, Attention -> Injured
-    All other transitions (improvements, stable) are 0.
     """
     print("\nAdding Status Decrease...")
-
     decrease_transitions = {
         ('available', 'attention'),
         ('available', 'injured'),
@@ -626,7 +616,7 @@ def add_status_decrease(df):
     df = df.drop(columns=['_tk'])
 
     n_decrease = df['Status Decrease'].sum()
-    print(f"  Added Status Decrease ({int(n_decrease):,} decreases detected)")
+    print(f"  Added Status Decrease ({int(n_decrease):,} status decreases detected)")
     return df
 
 
@@ -642,7 +632,6 @@ def add_any_acwr_danger(df):
     NaN ACWRs -> NaN result (unknown, not safe).
     """
     print("\nAdding Any ACWR Danger...")
-
     acwr_cols = [
         'Total Distance (ACWR) Yesterday',
         'High Speed Distance (ACWR) Yesterday',
@@ -654,6 +643,7 @@ def add_any_acwr_danger(df):
     acwr_df = df[acwr_cols]
     danger_flags = acwr_df.gt(1.5)
     all_nan = acwr_df.isna().all(axis=1)
+
     df['Any ACWR Danger'] = danger_flags.any(axis=1).astype(int)
     df.loc[all_nan, 'Any ACWR Danger'] = np.nan
 
@@ -668,47 +658,29 @@ def add_any_acwr_danger(df):
 
 def add_training_intensity_yesterday(df):
     """
-    Add 'Training Intensity Yesterday' -- composite GPS load score in [0, 1].
+    Add 'Training Intensity Yesterday' — composite GPS load score in [0, 1).
 
     Computed as the hyperbolic tangent (tanh) of the mean of the four GPS
     benchmark percentages divided by 100:
 
         tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100)
 
-    tanh maps [0, +inf) -> [0, 1) smoothly with no hard ceiling, eliminating
-    pile-up at exactly 1.0. Representative values on the new scale:
+    tanh maps [0, +inf) -> [0, 1) smoothly with no hard ceiling. Representative
+    values:
+        0%   of match benchmark  ->  0.00
+        50%  of match benchmark  ->  0.46
+        78%  (typical training)  ->  0.65
+        100% (match-level load)  ->  0.76
+        130% (hard session)      ->  0.86
+        200% (very extreme)      ->  0.96
 
-        0%  of match benchmark  ->  0.00
-        50% of match benchmark  ->  0.46
-        78% (typical training)  ->  0.65
-       100% (match-level load)  ->  0.76
-       130% (hard session)      ->  0.86
-       200% (very extreme)      ->  0.96
-
-    Max Velocity % is intentionally excluded because it reflects peak-speed
-    capacity rather than session load volume.
+    Max Velocity % is intentionally excluded (peak-speed capacity, not load volume).
 
     NaN handling:
-      - If ALL four GPS % columns are NaN -> NaN (no training data available)
-      - If some are NaN, computes mean over the available values (skipna)
-
-    This variable sits in the "Yesterday (t-1)" temporal group: it describes
-    the intensity of the session that occurred on the previous day. For causal
-    DTR experiments that need TODAY's intensity as the treatment, use
-    treatment_horizon=1 in the data loader to pull from the next row.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must contain the four GPS % columns from Readiness_Data1.
-
-    Returns
-    -------
-    pd.DataFrame
-        With 'Training Intensity Yesterday' added.
+      - If ALL four GPS % columns are NaN -> NaN
+      - If some are NaN, mean computed over available values (skipna=True)
     """
     print("\nAdding Training Intensity Yesterday...")
-
     gps_pct_cols = [
         'Total Distance % Yesterday',
         'High Speed Distance % Yesterday',
@@ -716,12 +688,10 @@ def add_training_intensity_yesterday(df):
         'Sprints % Yesterday',
     ]
     present = [c for c in gps_pct_cols if c in df.columns]
-
     if not present:
-        print("  WARNING: No GPS % columns found -- skipping Training Intensity Yesterday")
+        print("  WARNING: No GPS % columns found — skipping Training Intensity Yesterday")
         return df
 
-    # mean(axis=1, skipna=True) gives NaN only when ALL values are NaN
     raw_mean = df[present].mean(axis=1)
     df['Training Intensity Yesterday'] = np.tanh(raw_mean / 100.0)
 
@@ -739,7 +709,89 @@ def add_training_intensity_yesterday(df):
         print(f"  WARNING: {n_at_one:,} values equal exactly 1.0 (unexpected with tanh)")
     else:
         print(f"  No values at exactly 1.0 (as expected with tanh soft cap)")
+    return df
 
+
+# =============================================================================
+# BENCHMARK % CAPPING
+# =============================================================================
+
+def cap_benchmark_percentages(df, cap=250):
+    """
+    Cap GPS benchmark % columns at a maximum value to reduce extreme outlier influence.
+
+    Values above `cap` are clipped to `cap`. Extreme values arise when a player's
+    personal benchmark is very low (e.g. early-season or injury-return matches).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    cap : int or float, default 250
+        Upper bound for benchmark % columns. Values above this are clipped to cap.
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+    print(f"\nCapping benchmark % columns at {cap}%...")
+    benchmark_cols = [
+        'Total Distance % Yesterday',
+        'High Speed Distance % Yesterday',
+        'High Decelerations % Yesterday',
+        'Sprints % Yesterday',
+        'Max Velocity % Yesterday',
+    ]
+    total_capped = 0
+    for col in benchmark_cols:
+        if col in df.columns:
+            n_above = (df[col] > cap).sum()
+            if n_above > 0:
+                df[col] = df[col].clip(upper=cap)
+                print(f"  {col}: capped {n_above} values above {cap}%")
+            else:
+                print(f"  {col}: no values above {cap}%")
+            total_capped += n_above
+    print(f"  Total values capped: {total_capped}")
+    return df
+
+
+# =============================================================================
+# DATE RANGE FILTER
+# =============================================================================
+
+def filter_date_range(df, date_min=None, date_max=None):
+    """
+    Filter the dataset to a specific date range (inclusive on both ends).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have a 'Date' column parsed as datetime.
+    date_min : str or None, e.g. '2025-07-27'
+        Start date (inclusive). If None, no lower bound applied.
+    date_max : str or None, e.g. '2026-02-28'
+        End date (inclusive). If None, no upper bound applied.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered and index-reset DataFrame.
+    """
+    if date_min is None and date_max is None:
+        return df
+
+    n_before = len(df)
+    label = f"{date_min} \u2192 {date_max}" if date_min and date_max else (date_min or date_max)
+    print(f"\nFiltering date range: {label}...")
+
+    if date_min is not None:
+        df = df[df['Date'] >= pd.Timestamp(date_min)]
+    if date_max is not None:
+        df = df[df['Date'] <= pd.Timestamp(date_max)]
+
+    df = df.reset_index(drop=True)
+    n_after = len(df)
+    print(f"  Rows before: {n_before:,}  \u2192  after filter: {n_after:,} (removed {n_before - n_after:,})")
     return df
 
 
@@ -753,23 +805,20 @@ def reorder_columns(df):
 
     GROUP 1: Identifiers (always known)
     GROUP 2: Historical context (before day t)
-    GROUP 3: Yesterday's (t-1) data from Readiness_Data1
+    GROUP 3: Yesterday's (t-1) data from Readiness_Data
     GROUP 4: Yesterday's (t-1) data from Raw_Data (GPS/HR session data)
     GROUP 5: Yesterday's (t-1) data from Games (match performance)
-    GROUP 6: Today's (t) morning assessment — covariates (includes Match Day, known from schedule)
-    GROUP 7: Today's (t) post-assessment — treatment/activity (Activity Type Today, Selected)
+    GROUP 6: Today's (t) morning assessment — covariates
+    GROUP 7: Today's (t) post-assessment — treatment/activity
     """
     print("\nReordering columns...")
-
     column_order = [
         # --- GROUP 1: Identifiers ---
         'Date', 'Playerkey', 'Player ID', 'Position',
-
         # --- GROUP 2: Historical Context ---
         'Medical Availability Last 14 Days',
         'Club Attendance Last 14 Days',
-
-        # --- GROUP 3: Yesterday (t-1) from Readiness_Data1 ---
+        # --- GROUP 3: Yesterday (t-1) from Readiness_Data ---
         'Total Distance (ACWR) Yesterday',
         'High Speed Distance (ACWR) Yesterday',
         'High Decelerations (ACWR) Yesterday',
@@ -785,19 +834,17 @@ def reorder_columns(df):
         'Max Velocity % Yesterday',
         'Training Intensity Yesterday',
         'Perceived Exertion Yesterday',
-
         # --- GROUP 4: Yesterday (t-1) from Raw_Data (GPS/HR) ---
         'Total Minutes Yesterday',
         'Total Distance (m) Yesterday',
         'High Speed Distance (m) Yesterday',
         'Avg Heart Rate Yesterday',
         'Heart Rate Exertion Yesterday',
-
         # --- GROUP 5: Yesterday (t-1) from Games (match performance) ---
-        'Match High Intensity Per BIP Yesterday',
-        'Match HIT Efforts Per BIP Yesterday',
+        'Match HID Per BIP Yesterday',
+        'Match HIE Per BIP Yesterday',
         'Match Minutes Played Yesterday',
-
+        'Match Intensity Yesterday',
         # --- GROUP 6: Today (t) morning assessment — COVARIATES ---
         'Status',
         'Status Decrease',
@@ -809,12 +856,10 @@ def reorder_columns(df):
         'Days Since Game',
         'Days Until Match',
         'Match Day',
-
         # --- GROUP 7: Today (t) post-assessment ---
         'Activity Type Today',
         'Selected',
     ]
-
     available = [col for col in column_order if col in df.columns]
     remaining = [col for col in df.columns if col not in available]
     final_order = available + remaining
@@ -832,7 +877,6 @@ def save_processed_data(df):
     output_dir = get_project_root() / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "RTT.xlsx"
-
     df.to_excel(output_path, index=False, engine='openpyxl')
     print(f"\nSaved processed data to: {output_path}")
     print(f"Final shape: {df.shape[0]:,} rows x {df.shape[1]} columns")
@@ -846,23 +890,12 @@ def save_processed_data(df):
 def create_temporal_timeline():
     """
     Create a horizontal timeline diagram showing temporal ordering of variables.
-
-    The diagram shows 4 main phases within a single row (player-day):
-      1. BEFORE DAY t  -- Yesterday's activity/load data (blue)
-      2. MORNING (t)   -- Wellness assessment & schedule info (orange)
-      3. POST-ASSESSMENT -- Treatment decision by coaching staff (red)
-      4. TODAY'S SESSION -- The actual activity that generates tomorrow's data (grey)
-
-    An arrow label "Night / Sleep / Recovery" sits between phases 1 and 2
-    to represent the overnight transition the user described.
-
     Returns a reportlab Drawing flowable (approx 480 x 240 pts).
     """
     W = 480
     H = 240
     d = Drawing(W, H)
 
-    # --- Phase definitions ---
     phases = [
         {
             'title': 'BEFORE DAY t',
@@ -939,36 +972,30 @@ def create_temporal_timeline():
     for i, phase in enumerate(phases):
         x = x_start + i * (box_w + arrow_gap)
 
-        # Box background with rounded corners
         d.add(Rect(x, y_base, box_w, box_h,
                    fillColor=phase['bg'], strokeColor=phase['color'],
                    strokeWidth=1.5, rx=5, ry=5))
 
-        # Title (bold, phase color)
         d.add(String(x + box_w / 2, y_base + box_h - 15,
                      phase['title'],
                      fontSize=7, fontName='Helvetica-Bold',
                      textAnchor='middle', fillColor=phase['color']))
 
-        # Subtitle (grey)
         d.add(String(x + box_w / 2, y_base + box_h - 26,
                      phase['subtitle'],
                      fontSize=6, textAnchor='middle',
                      fillColor=colors.HexColor('#666666')))
 
-        # Thin divider line under subtitle
         d.add(Line(x + 6, y_base + box_h - 31, x + box_w - 6,
                    y_base + box_h - 31,
                    strokeColor=phase['color'], strokeWidth=0.5))
 
-        # Variable list
         for j, var_name in enumerate(phase['vars']):
             if var_name:
                 d.add(String(x + 7, y_base + box_h - 44 - j * 12,
                              var_name, fontSize=6,
                              fillColor=colors.HexColor('#333333')))
 
-        # Arrow to next phase
         if i < n_phases - 1:
             ax = x + box_w + 2
             ay = y_base + box_h / 2
@@ -982,7 +1009,7 @@ def create_temporal_timeline():
                 fillColor=colors.HexColor('#999999'),
                 strokeColor=colors.HexColor('#999999')))
 
-    # --- "Night / Sleep" label on the first arrow ---
+    # "Night / Sleep" label on the first arrow
     night_x = x_start + box_w + arrow_gap / 2
     night_y = y_base + box_h / 2 + 22
     d.add(String(night_x, night_y, 'Night /',
@@ -994,7 +1021,6 @@ def create_temporal_timeline():
                  textAnchor='middle',
                  fillColor=colors.HexColor('#5C6BC0')))
 
-    # --- Main title ---
     d.add(String(W / 2, y_base + box_h + 22,
                  'Temporal Timeline: Variables Within Each Row (Player-Day)',
                  fontSize=10, fontName='Helvetica-Bold',
@@ -1010,7 +1036,7 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
 
     Color coding by temporal group:
     - Green:  Identifiers
-    - Blue:   Yesterday / historical (t-1) data
+    - Blue:   Yesterday / historical (t-1) from Readiness_Data
     - Teal:   Yesterday from Raw_Data (GPS/HR)
     - Purple: Yesterday from Games (match performance)
     - Orange: Current (t) morning assessment
@@ -1019,8 +1045,8 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
     Underlined variables are engineered features not in the raw data.
     """
     print("\nGenerating PDF documentation...")
-
     pdf_path = Path(output_dir) / "RTT Data Dictionary.pdf"
+
     doc = SimpleDocTemplate(
         str(pdf_path),
         pagesize=A4,
@@ -1033,7 +1059,6 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
     elements = []
     styles = getSampleStyleSheet()
 
-    # --- Custom styles ---
     title_style = ParagraphStyle(
         'CustomTitle', parent=styles['Heading1'],
         fontSize=18, textColor=colors.HexColor('#1a1a2e'),
@@ -1054,7 +1079,6 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         textColor=colors.white
     )
 
-    # Title
     elements.append(Paragraph("RTT Data Dictionary — Processed Dataset", title_style))
     elements.append(Paragraph(
         f"Generated: {datetime.now().strftime('%Y-%m-%d')} &nbsp;|&nbsp; "
@@ -1064,14 +1088,14 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
     ))
     elements.append(Paragraph(
         "Each row = one player-day. Variables grouped by temporal position. "
-        "Combines Readiness_Data1, Raw_Data, Sessions, and Games.",
+        "Combines Readiness_Data, Raw_Data, Sessions, and Games.",
         overview_style
     ))
 
     # Legend
     legend_data = [[
         Paragraph('<font color="#4CAF50"><b>||</b></font> Identifiers', styles['Normal']),
-        Paragraph('<font color="#2196F3"><b>||</b></font> Yesterday (RD1)', styles['Normal']),
+        Paragraph('<font color="#2196F3"><b>||</b></font> Yesterday (RD)', styles['Normal']),
         Paragraph('<font color="#009688"><b>||</b></font> Yesterday (Raw)', styles['Normal']),
     ], [
         Paragraph('<font color="#7B1FA2"><b>||</b></font> Yesterday (Games)', styles['Normal']),
@@ -1086,32 +1110,25 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
     elements.append(legend_table)
     elements.append(Spacer(1, 0.15 * inch))
 
-    # --- Temporal timeline diagram ---
-    timeline = create_temporal_timeline()
-    elements.append(timeline)
+    elements.append(create_temporal_timeline())
     elements.append(Spacer(1, 0.15 * inch))
 
-    # Color definitions
-    c_ident = colors.HexColor('#4CAF50')
-    c_prev_rd1 = colors.HexColor('#2196F3')
-    c_prev_raw = colors.HexColor('#009688')
+    # Colors
+    c_ident      = colors.HexColor('#4CAF50')
+    c_prev_rd1   = colors.HexColor('#2196F3')
+    c_prev_raw   = colors.HexColor('#009688')
     c_prev_games = colors.HexColor('#7B1FA2')
-    c_current = colors.HexColor('#FF9800')
-    c_post = colors.HexColor('#E53935')
+    c_current    = colors.HexColor('#FF9800')
+    c_post       = colors.HexColor('#E53935')
 
     # Variable definitions: [name, description, is_engineered, color]
     variables = [
-        # Identifiers
         ['Date', 'Date of observation', False, c_ident],
         ['Playerkey', 'Anonymized player identifier (hash)', False, c_ident],
-        ['Player ID', 'Sequential player ID (1-27)', True, c_ident],
+        ['Player ID', 'Sequential player ID (1-28)', True, c_ident],
         ['Position', 'Playing position (CD, ST, CDM, CAM, FB, WG, WB)', False, c_ident],
-
-        # Historical
         ['Medical Availability\nLast 14 Days', 'Medical availability (%) over the last 14 days', False, c_prev_rd1],
         ['Club Attendance\nLast 14 Days', 'Club attendance (%) over the last 14 days', False, c_prev_rd1],
-
-        # Yesterday from RD1
         ['Total Distance\n(ACWR) Yesterday', 'Total Distance ACWR (7:42 day EMA ratio)', False, c_prev_rd1],
         ['High Speed Distance\n(ACWR) Yesterday', 'High-Speed Distance (>19.8 km/h) ACWR', False, c_prev_rd1],
         ['High Decelerations\n(ACWR) Yesterday', 'High decelerations (>3 m/s\u00b2) ACWR', False, c_prev_rd1],
@@ -1120,27 +1137,22 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         ['Activity Type\nYesterday', 'Activity type from previous day (Training, Game, Rehab, etc.)', False, c_prev_rd1],
         ['Comment Yesterday', 'Staff notes on previous day status', False, c_prev_rd1],
         ['Comment Category\nYesterday', 'Categorized comment (recovery, discomfort, stiffness, etc.)', True, c_prev_rd1],
-        ['Total Distance %\nYesterday', 'Total distance as % of personal match benchmark', False, c_prev_rd1],
-        ['High Speed Distance\n% Yesterday', 'High-Speed Distance as % of personal benchmark', False, c_prev_rd1],
-        ['High Decelerations\n% Yesterday', 'Decelerations as % of personal benchmark', False, c_prev_rd1],
-        ['Sprints % Yesterday', 'Sprints as % of personal benchmark', False, c_prev_rd1],
-        ['Max Velocity %\nYesterday', 'Max velocity as % of personal best', False, c_prev_rd1],
+        ['Total Distance %\nYesterday', 'Total distance as % of personal match benchmark (capped at 250%)', False, c_prev_rd1],
+        ['High Speed Distance\n% Yesterday', 'High-Speed Distance as % of personal benchmark (capped at 250%)', False, c_prev_rd1],
+        ['High Decelerations\n% Yesterday', 'Decelerations as % of personal benchmark (capped at 250%)', False, c_prev_rd1],
+        ['Sprints % Yesterday', 'Sprints as % of personal benchmark (capped at 250%)', False, c_prev_rd1],
+        ['Max Velocity %\nYesterday', 'Max velocity as % of personal best (capped at 250%)', False, c_prev_rd1],
         ['Training Intensity\nYesterday', 'Composite: tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100). Smooth soft cap in [0, 1): 100% match load -> 0.76, 130% -> 0.86. Excludes Max Velocity %.', True, c_prev_rd1],
         ['Perceived Exertion\nYesterday', 'RPE z-score (28-day rolling window)', False, c_prev_rd1],
-
-        # Yesterday from Raw_Data
         ['Total Minutes\nYesterday', 'Total session duration in minutes (summed across sessions). From Raw_Data, shifted +1 day.', False, c_prev_raw],
         ['Total Distance (m)\nYesterday', 'Total distance covered in metres (summed). From Raw_Data, shifted +1 day.', False, c_prev_raw],
         ['High Speed Distance (m)\nYesterday', 'High-speed distance in metres (summed). From Raw_Data, shifted +1 day.', False, c_prev_raw],
         ['Avg Heart Rate\nYesterday', 'Average heart rate (bpm, weighted mean by session duration). From Raw_Data, shifted +1 day.', False, c_prev_raw],
         ['Heart Rate Exertion\nYesterday', 'Heart rate exertion score (weighted mean). From Raw_Data, shifted +1 day.', False, c_prev_raw],
-
-        # Yesterday from Games
-        ['Match High Intensity\nPer BIP Yesterday', 'High-intensity distance per Ball-In-Play minute (m). Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
-        ['Match HIT Efforts\nPer BIP Yesterday', 'High-intensity efforts per Ball-In-Play minute. Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
+        ['Match HID Per BIP\nYesterday', 'High-intensity distance per Ball-In-Play minute (m). Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
+        ['Match HIE Per BIP\nYesterday', 'High-intensity efforts per Ball-In-Play minute. Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
         ['Match Minutes Played\nYesterday', 'Total minutes played in match. Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
-
-        # Morning (t)
+        ['Match Intensity\nYesterday', 'Causal outcome Y: geometric mean of HID Per BIP and HIE Per BIP, multiplied by sqrt(clip(minutes_played, 15, 90)/90): playing time clamped to [15, 90] min. Continuous, range ~[0, ∞). Only filled day after match.', True, c_prev_games],
         ['Status', 'Current medical status (Available, Attention, Injured, Sick, Absent)', False, c_current],
         ['Status Decrease', 'Binary: 1 if status worsened vs previous day', True, c_current],
         ['Fatigue (z)', 'Self-reported fatigue z-score (28-day rolling window)', False, c_current],
@@ -1155,8 +1167,6 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         ['Days Since Game', 'Days since last completed match (min=1, never 0)', True, c_current],
         ['Days Until Match', 'Days until next scheduled match (0 on match day for selected players)', True, c_current],
         ['Match Day', 'Team-level: 1 if scheduled match today (known from fixture list in advance)', True, c_current],
-
-        # Post-assessment
         ['Activity Type Today', 'Session type on day t, assigned after morning assessment. Derived from next row.', True, c_post],
         ['Selected', 'Player-level: 1 if selected for match, 0 if not, NaN on non-match days', True, c_post],
     ]
@@ -1169,7 +1179,6 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         desc_para = Paragraph(desc, cell_style)
         return [name_para, desc_para]
 
-    # Build table
     table_data = [[
         Paragraph('<b>Variable</b>', ParagraphStyle('H', fontSize=10, textColor=colors.white)),
         Paragraph('<b>Description</b>', ParagraphStyle('H', fontSize=10, textColor=colors.white))
@@ -1198,11 +1207,9 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
     ]
     for i, color in enumerate(row_colors, start=1):
         style_cmds.append(('BACKGROUND', (0, i), (0, i), color))
-
     var_table.setStyle(TableStyle(style_cmds))
     elements.append(var_table)
 
-    # Underline note
     elements.append(Spacer(1, 0.15 * inch))
     note_style = ParagraphStyle(
         'Note', parent=styles['Normal'], fontSize=9,
@@ -1214,7 +1221,6 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         note_style
     ))
 
-    # Data source section
     elements.append(Spacer(1, 0.2 * inch))
     src_title = ParagraphStyle(
         'SrcTitle', parent=styles['Heading2'], fontSize=12,
@@ -1222,27 +1228,29 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         spaceAfter=8, fontName='Helvetica-Bold'
     )
     elements.append(Paragraph("Data Sources", src_title))
+
     src_style = ParagraphStyle(
         'SrcText', parent=styles['Normal'], fontSize=9,
         leading=12, spaceBefore=3, spaceAfter=3,
         textColor=colors.HexColor('#333333')
     )
     sources = [
-        ("<b>Readiness_Data1.xlsx</b> — Base dataset (4,239 rows). Daily player-day "
-         "observations with ACWR, wellness z-scores, GPS %, RPE, medical status, and activity type."),
-        ("<b>Raw_Data.xlsx</b> — Session-level GPS and heart rate data (9,968 rows, 84 players). "
-         "Filtered to 27 RD1 players, aggregated per player-day, shifted +1 day to become 'yesterday' data."),
-        ("<b>Sessions.xlsx</b> — Team-level session metadata (1,206 rows). "
-         "Used to identify match days (matchday = 'MD 0')."),
-        ("<b>Games.xlsx</b> — Match performance data (403 rows, 24 players). "
-         "Filtered to RD1 players, shifted +1 day to become 'yesterday' match data."),
+        ("<b>Readiness_Data.xlsx</b> — Base dataset. Daily player-day observations "
+         "with ACWR, wellness z-scores, GPS %, RPE, medical status, and activity type."),
+        ("<b>Raw_Data.xlsx</b> — Session-level GPS and heart rate data. "
+         "Filtered to base dataset players, aggregated per player-day, shifted +1 day "
+         "to become 'yesterday' data."),
+        ("<b>Sessions.xlsx</b> — Team-level session metadata. "
+         "Loaded for reference; match day identification from Activity Type Today."),
+        ("<b>Games.xlsx</b> — Match performance data. "
+         "Filtered to base dataset players, shifted +1 day to become 'yesterday' match data."),
     ]
     for s in sources:
         elements.append(Paragraph(s, src_style))
 
-    # Definitions section
     elements.append(Spacer(1, 0.2 * inch))
     elements.append(Paragraph("Definitions", src_title))
+
     def_style = ParagraphStyle(
         'Definition', parent=styles['Normal'], fontSize=9,
         leading=12, spaceBefore=4, spaceAfter=4,
@@ -1267,16 +1275,17 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         ("<b>BIP (Ball In Play)</b> — Time during a match when the ball is actively in play, "
          "used to normalize physical intensity metrics for fair comparison across matches."),
     ]
-    for d in definitions:
-        elements.append(Paragraph(d, def_style))
+    for defn in definitions:
+        elements.append(Paragraph(defn, def_style))
 
     # Player ID mapping
     elements.append(Spacer(1, 0.2 * inch))
     elements.append(Paragraph("Player ID Mapping", src_title))
-    mapping_data = [
-        [Paragraph('<b>Player ID</b>', ParagraphStyle('H', fontSize=9, textColor=colors.white)),
-         Paragraph('<b>Playerkey (hash)</b>', ParagraphStyle('H', fontSize=9, textColor=colors.white))]
-    ]
+
+    mapping_data = [[
+        Paragraph('<b>Player ID</b>', ParagraphStyle('H', fontSize=9, textColor=colors.white)),
+        Paragraph('<b>Playerkey (hash)</b>', ParagraphStyle('H', fontSize=9, textColor=colors.white))
+    ]]
     for pk, pid in sorted(player_mapping.items(), key=lambda x: x[1]):
         mapping_data.append([
             Paragraph(str(pid), cell_style),
@@ -1309,12 +1318,23 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
 # MAIN PIPELINE
 # =============================================================================
 
-def preprocess_data():
+def preprocess_data(date_min='2025-07-27', date_max='2026-02-28', benchmark_cap=250):
     """
     Main preprocessing pipeline — orchestrates all transformation steps.
 
+    Parameters
+    ----------
+    date_min : str or None, default '2025-07-27'
+        Start date filter (inclusive). Set to None to keep all early rows.
+    date_max : str or None, default '2026-02-28'
+        End date filter (inclusive). Set to None to keep all late rows.
+    benchmark_cap : int or None, default 250
+        Cap for GPS benchmark % columns. Set to None to skip capping.
+
+    Steps
+    -----
     1.  Load all raw xlsx files
-    2.  Basic transforms on Readiness_Data1 (player IDs, renaming, %)
+    2.  Basic transforms on Readiness_Data (player IDs, renaming, %)
     3.  Comment categorization
     4.  Merge Raw_Data GPS/HR columns (shifted +1 day)
     5.  Merge Games match performance columns (shifted +1 day)
@@ -1323,8 +1343,11 @@ def preprocess_data():
     8.  Match day features
     9.  Status Decrease
     10. ACWR danger flag
-    11. Column reordering
-    12. Save RTT.xlsx + PDF
+    11. Training Intensity Yesterday composite
+    12. Benchmark % capping
+    13. Date range filter
+    14. Column reordering
+    15. Save RTT.xlsx + PDF
 
     Returns
     -------
@@ -1334,6 +1357,10 @@ def preprocess_data():
     print("=" * 80)
     print("OHL PLAYER READINESS - MULTI-DATASET PREPROCESSING PIPELINE")
     print("=" * 80)
+    if date_min or date_max:
+        print(f"  Date range: {date_min} \u2192 {date_max}")
+    if benchmark_cap is not None:
+        print(f"  Benchmark % cap: {benchmark_cap}%")
 
     # 1. Load all data
     data = load_all_raw_data()
@@ -1375,10 +1402,17 @@ def preprocess_data():
     # 11. Training intensity composite
     df = add_training_intensity_yesterday(df)
 
-    # 12. Final organization
+    # 12. Benchmark % capping
+    if benchmark_cap is not None:
+        df = cap_benchmark_percentages(df, cap=benchmark_cap)
+
+    # 13. Date range filter
+    df = filter_date_range(df, date_min=date_min, date_max=date_max)
+
+    # 14. Final column ordering
     df = reorder_columns(df)
 
-    # 13. Save results
+    # 15. Save results
     output_path = save_processed_data(df)
     generate_documentation_pdf(df, player_mapping, output_path.parent)
 
@@ -1386,6 +1420,7 @@ def preprocess_data():
     print("PREPROCESSING COMPLETE")
     print(f"  Total features: {df.shape[1]}")
     print(f"  Total observations: {df.shape[0]:,}")
+    print(f"  Date range: {df['Date'].min().date()} \u2192 {df['Date'].max().date()}")
     print(f"  Output: {output_path}")
     print("=" * 80)
 

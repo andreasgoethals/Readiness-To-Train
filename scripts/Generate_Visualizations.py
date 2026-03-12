@@ -19,31 +19,26 @@ Output structure:
     │   └── player_1_all_cycles_detailed.png
     ├── player 2/
     │   └── ...
-    └── player 27/
+    └── player 28/
         └── ...
 
 Usage:
-    python scripts/Generate_Visualizations.py
+    python scripts/generate_visualizations.py
 """
 
 import sys
 from pathlib import Path
 
-# Resolve project root and add src to path
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 sys.path.insert(0, str(project_root / 'src'))
 
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for batch generation
+matplotlib.use('Agg')
 
-from methods.DAG_Creator import DAGCreator
+from methods.dag_creator import DAGCreator
 
-
-# =========================================================================
-# CONFIGURATION
-# =========================================================================
 
 STATE_VARS = [
     'Fatigue (z)',
@@ -58,10 +53,6 @@ IMAGES_DIR = project_root / 'images' / 'DAGs'
 DATA_PATH = project_root / 'data' / 'processed' / 'RTT.xlsx'
 
 
-# =========================================================================
-# MAIN
-# =========================================================================
-
 def generate_all_player_dags(
     state_vars=STATE_VARS,
     treatment_var=TREATMENT,
@@ -70,24 +61,6 @@ def generate_all_player_dags(
     data_path=DATA_PATH,
     dpi=300,
 ):
-    """
-    Generate four DAG visualizations per player and save to images/player <player_id>/.
-
-    Parameters
-    ----------
-    state_vars : list of str
-        State variables (covariates) for the DAG.
-    treatment_var : str
-        Treatment variable name.
-    outcome_var : str
-        Outcome variable name.
-    images_dir : Path or str
-        Root directory for image output. Player subdirectories are created inside.
-    data_path : Path or str
-        Path to the processed CSV data file.
-    dpi : int
-        Resolution for saved images (default 300 for publication quality).
-    """
     images_dir = Path(images_dir)
     data_path = Path(data_path)
 
@@ -97,8 +70,7 @@ def generate_all_player_dags(
             "Run src/data/data_preprocessing.py first."
         )
 
-    # Discover all player IDs
-    df = pd.read_csv(data_path)
+    df = pd.read_excel(data_path, usecols=['Player ID'])
     player_ids = sorted(df['Player ID'].unique())
     print(f"Found {len(player_ids)} players: {player_ids}")
 
@@ -106,9 +78,9 @@ def generate_all_player_dags(
         player_dir = images_dir / f"player {pid}"
         player_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n{'=' * 60}")
+        print(chr(10) + "=" * 60)
         print(f"  Player {pid}")
-        print(f"{'=' * 60}")
+        print("=" * 60)
 
         try:
             creator = DAGCreator(
@@ -126,53 +98,24 @@ def generate_all_player_dags(
         n_cycles = creator.metadata['n_cycles']
         print(f"  Cycles: {n_cycles}, Lengths: {creator.cycle_lengths}")
 
-        # 1. First cycle, schematic
         print("  [1/4] First cycle -- schematic")
-        creator.visualize(
-            cycles=1,
-            completeness='schematic',
-            output_dir=str(player_dir),
-            dpi=dpi,
-            show=False,
-        )
+        creator.visualize(cycles=1, completeness='schematic', output_dir=str(player_dir), dpi=dpi, show=False)
 
-        # 2. First cycle, detailed
         print("  [2/4] First cycle -- detailed")
-        creator.visualize(
-            cycles=1,
-            completeness='detailed',
-            output_dir=str(player_dir),
-            dpi=dpi,
-            show=False,
-        )
+        creator.visualize(cycles=1, completeness='detailed', output_dir=str(player_dir), dpi=dpi, show=False)
 
-        # 3. All cycles, schematic
         print("  [3/4] All cycles -- schematic")
-        creator.visualize(
-            cycles=None,
-            completeness='schematic',
-            output_dir=str(player_dir),
-            dpi=dpi,
-            show=False,
-        )
+        creator.visualize(cycles=None, completeness='schematic', output_dir=str(player_dir), dpi=dpi, show=False)
 
-        # 4. All cycles, detailed
         print("  [4/4] All cycles -- detailed")
-        creator.visualize(
-            cycles=None,
-            completeness='detailed',
-            output_dir=str(player_dir),
-            dpi=dpi,
-            show=False,
-        )
+        creator.visualize(cycles=None, completeness='detailed', output_dir=str(player_dir), dpi=dpi, show=False)
 
-        # Close all figures to free memory
         import matplotlib.pyplot as plt
         plt.close('all')
 
-    print(f"\n{'=' * 60}")
+    print(chr(10) + "=" * 60)
     print(f"  All visualizations saved to: {images_dir}")
-    print(f"{'=' * 60}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

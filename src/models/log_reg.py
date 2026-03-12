@@ -1,9 +1,8 @@
 """
-CatBoost Model for Readiness Prediction
+Logistic Regression Model for Readiness Prediction
 
 Streamlined implementation with:
 - Automatic task type detection (classification vs regression)
-- Native categorical feature handling via cat_features parameter
 - Hyperparameter optimization using Optuna
 - Optimal threshold selection using Youden's J statistic
 - Returns dict only, no file I/O or print statements
@@ -13,30 +12,24 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import sys
-import tempfile
 from typing import List, Dict, Optional
-import warnings
 
+# src/models/ → src/ (project root / src)
+# Adding src/ to path so 'data.data_loader' is importable
 sys.path.append(str(Path(__file__).parent.parent))
 
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, mean_squared_error, r2_score
 )
 import optuna
 
-try:
-    from catboost import CatBoostClassifier, CatBoostRegressor
-    CATBOOST_AVAILABLE = True
-except ImportError:
-    CATBOOST_AVAILABLE = False
-    warnings.warn("CatBoost not installed. Install with: pip install catboost")
-
 from data.data_loader import ReadinessDataLoader
 
 
-class CatBoostModel:
-    """CatBoost classifier/regressor with HPO and optimal threshold selection."""
+class LogisticRegressionModel:
+    """Logistic Regression classifier/regressor with HPO and optimal threshold selection."""
 
     def __init__(
         self,
@@ -47,19 +40,17 @@ class CatBoostModel:
         target_horizon: int = 0,
         test_size: float = 0.2,
         val_size: float = 0.1,
-        categorical_encoding: str = 'label',
+        categorical_encoding: str = 'one-hot',
         missing_numeric: str = 'mean',
         missing_categorical: str = 'mode',
-        standardize: bool = False,
+        standardize: bool = True,
         hpo_trials: int = 50,
-        iterations: int = 500,
-        depth: int = 6,
-        learning_rate: float = 0.1,
+        C: float = 1.0,
+        penalty: str = 'l2',
+        max_iter: int = 1000,
+        class_weight: Optional[str] = 'balanced',
         random_state: int = 42
     ):
-        if not CATBOOST_AVAILABLE:
-            raise ImportError("CatBoost is not installed. Install with: pip install catboost")
-
         self.target_variable = target_variable
         self.predictory_columns = predictory_columns
         self.lag = lag
@@ -72,9 +63,10 @@ class CatBoostModel:
         self.missing_categorical = missing_categorical
         self.standardize = standardize
         self.hpo_trials = hpo_trials
-        self.iterations = iterations
-        self.depth = depth
-        self.learning_rate = learning_rate
+        self.C = C
+        self.penalty = penalty
+        self.max_iter = max_iter
+        self.class_weight = class_weight
         self.random_state = random_state
 
         self.data_loader = ReadinessDataLoader()
@@ -82,11 +74,6 @@ class CatBoostModel:
         self.data = None
         self.task_type = None
         self.best_params = None
-        self.cat_features_indices = None
-
-        # CatBoost writes training logs to a 'catboost_info' directory by default.
-        # Redirect this to a temporary directory to prevent polluting the project root.
-        self._catboost_train_dir = tempfile.mkdtemp(prefix='catboost_')
 
     def _detect_task_type(self, y: pd.Series) -> str:
         """Auto-detect classification vs regression."""
@@ -114,66 +101,38 @@ class CatBoostModel:
             standardize=self.standardize
         )
         self.task_type = self._detect_task_type(self.data['y_train'])
-
-        # Get categorical feature indices for CatBoost
-        categorical_features = self.data['categorical_features']
-        feature_names = self.data['feature_names']
-
-        # Find indices of categorical features
-        self.cat_features_indices = [
-            i for i, name in enumerate(feature_names)
-            if name in categorical_features
-        ]
-
         return self.data
 
     def _objective(self, trial: optuna.Trial) -> float:
         """Optuna objective function."""
-        iterations = trial.suggest_int('iterations', 100, 1000)
-        depth = trial.suggest_int('depth', 3, 10)
-        learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
-        l2_leaf_reg = trial.suggest_float('l2_leaf_reg', 1.0, 10.0)
-        random_strength = trial.suggest_float('random_strength', 0.0, 10.0)
+        C = trial.suggest_float('C', 0.001, 100.0, log=True)
+        penalty = trial.suggest_categorical('penalty', ['l1', 'l2'])
+        solver = 'liblinear' if penalty == 'l1' else 'lbfgs'
 
-        # Create model based on task type
         if self.task_type == 'classification':
-            model = CatBoostClassifier(
-                iterations=iterations,
-                depth=depth,
-                learning_rate=learning_rate,
-                l2_leaf_reg=l2_leaf_reg,
-                random_strength=random_strength,
-                random_seed=self.random_state,
-                verbose=0,
-                auto_class_weights='Balanced',
-                cat_features=self.cat_features_indices,
-                train_dir=self._catboost_train_dir
+            model = LogisticRegression(
+                C=C,
+                penalty=penalty,
+                max_iter=self.max_iter,
+                class_weight=self.class_weight,
+                random_state=self.random_state,
+                solver=solver,
+                verbose=0
             )
         else:
-            model = CatBoostRegressor(
-                iterations=iterations,
-                depth=depth,
-                learning_rate=learning_rate,
-                l2_leaf_reg=l2_leaf_reg,
-                random_strength=random_strength,
-                random_seed=self.random_state,
-                verbose=0,
-                cat_features=self.cat_features_indices,
-                train_dir=self._catboost_train_dir
+            alpha = 1.0 / C
+            model = Ridge(
+                alpha=alpha,
+                max_iter=self.max_iter,
+                random_state=self.random_state
             )
 
-        # Train on training set with early stopping on validation set
+        model.fit(self.data['X_train'], self.data['y_train'])
+
         if len(self.data['y_val']) > 0:
-            model.fit(
-                self.data['X_train'],
-                self.data['y_train'],
-                eval_set=(self.data['X_val'], self.data['y_val']),
-                early_stopping_rounds=50,
-                verbose=False
-            )
-
-            # Evaluate on validation set
             if self.task_type == 'classification':
+                # Use ROC AUC with predicted probabilities — F1 at 0.5 threshold
+                # is unreliable with severe class imbalance (~3-5% positive)
                 y_val_proba = model.predict_proba(self.data['X_val'])[:, 1]
                 if len(np.unique(self.data['y_val'])) > 1:
                     score = roc_auc_score(self.data['y_val'], y_val_proba)
@@ -183,14 +142,6 @@ class CatBoostModel:
                 y_val_pred = model.predict(self.data['X_val'])
                 score = -mean_squared_error(self.data['y_val'], y_val_pred)
         else:
-            # No validation set - train without early stopping
-            model.fit(
-                self.data['X_train'],
-                self.data['y_train'],
-                verbose=False
-            )
-
-            # Use training score (not ideal)
             if self.task_type == 'classification':
                 y_train_proba = model.predict_proba(self.data['X_train'])[:, 1]
                 if len(np.unique(self.data['y_train'])) > 1:
@@ -232,7 +183,7 @@ class CatBoostModel:
             - y_train_true, y_train_pred (probabilities for classification)
             - y_test_true, y_test_pred (probabilities for classification)
             - y_val_true, y_val_pred (probabilities for classification, if val exists)
-            - model_weights (feature importances dict)
+            - model_weights (coefficients dict)
             - task_type, best_params
             - metrics: roc_auc, optimal_threshold, f1_optimal, accuracy_optimal,
                       precision_optimal, recall_optimal (for classification)
@@ -244,60 +195,34 @@ class CatBoostModel:
         # Run HPO
         if self.hpo_trials > 0:
             self._run_hpo()
-            iterations = self.best_params['iterations']
-            depth = self.best_params['depth']
-            learning_rate = self.best_params['learning_rate']
-            l2_leaf_reg = self.best_params['l2_leaf_reg']
-            random_strength = self.best_params['random_strength']
+            C = self.best_params['C']
+            penalty = self.best_params.get('penalty', 'l2')
         else:
-            iterations = self.iterations
-            depth = self.depth
-            learning_rate = self.learning_rate
-            l2_leaf_reg = 3.0
-            random_strength = 1.0
+            C = self.C
+            penalty = self.penalty
 
-        # Train final model with best parameters
+        # Train final model
+        solver = 'liblinear' if penalty == 'l1' else 'lbfgs'
+
         if self.task_type == 'classification':
-            self.model = CatBoostClassifier(
-                iterations=iterations,
-                depth=depth,
-                learning_rate=learning_rate,
-                l2_leaf_reg=l2_leaf_reg,
-                random_strength=random_strength,
-                random_seed=self.random_state,
-                verbose=0,
-                auto_class_weights='Balanced',
-                cat_features=self.cat_features_indices,
-                train_dir=self._catboost_train_dir
+            self.model = LogisticRegression(
+                C=C,
+                penalty=penalty,
+                max_iter=self.max_iter,
+                class_weight=self.class_weight,
+                random_state=self.random_state,
+                solver=solver,
+                verbose=0
             )
         else:
-            self.model = CatBoostRegressor(
-                iterations=iterations,
-                depth=depth,
-                learning_rate=learning_rate,
-                l2_leaf_reg=l2_leaf_reg,
-                random_strength=random_strength,
-                random_seed=self.random_state,
-                verbose=0,
-                cat_features=self.cat_features_indices,
-                train_dir=self._catboost_train_dir
+            alpha = 1.0 / C
+            self.model = Ridge(
+                alpha=alpha,
+                max_iter=self.max_iter,
+                random_state=self.random_state
             )
 
-        # Train with early stopping if validation set available
-        if len(self.data['y_val']) > 0:
-            self.model.fit(
-                self.data['X_train'],
-                self.data['y_train'],
-                eval_set=(self.data['X_val'], self.data['y_val']),
-                early_stopping_rounds=50,
-                verbose=False
-            )
-        else:
-            self.model.fit(
-                self.data['X_train'],
-                self.data['y_train'],
-                verbose=False
-            )
+        self.model.fit(self.data['X_train'], self.data['y_train'])
 
         # Generate predictions
         if self.task_type == 'classification':
@@ -309,19 +234,11 @@ class CatBoostModel:
             y_test_pred = self.model.predict(self.data['X_test'])
             y_val_pred = self.model.predict(self.data['X_val']) if len(self.data['y_val']) > 0 else None
 
-        # Extract feature importances
-        feature_importances = self.model.get_feature_importance()
-
-        # Get best_iteration safely
-        best_iteration = None
-        if hasattr(self.model, 'best_iteration_') and self.model.best_iteration_ is not None:
-            best_iteration = int(self.model.best_iteration_)
-
+        # Extract model weights
         model_weights = {
-            'feature_importances': feature_importances.tolist(),
-            'feature_names': self.data['feature_names'],
-            'best_iteration': best_iteration,
-            'categorical_feature_indices': self.cat_features_indices
+            'coefficients': self.model.coef_.tolist() if hasattr(self.model, 'coef_') else None,
+            'intercept': float(self.model.intercept_[0] if isinstance(self.model.intercept_, np.ndarray) else self.model.intercept_),
+            'feature_names': self.data['feature_names']
         }
 
         # Prepare results
@@ -332,11 +249,7 @@ class CatBoostModel:
             'y_test_pred': y_test_pred,
             'model_weights': model_weights,
             'task_type': self.task_type,
-            'best_params': self.best_params if self.hpo_trials > 0 else {
-                'iterations': iterations,
-                'depth': depth,
-                'learning_rate': learning_rate
-            }
+            'best_params': self.best_params if self.hpo_trials > 0 else {'C': C, 'penalty': penalty}
         }
 
         # Add validation predictions if available
@@ -382,19 +295,31 @@ class CatBoostModel:
 
 if __name__ == "__main__":
     # Example usage
+    # NOTE: Activity Type Today is determined AFTER the morning assessment
+    # (it is derived from the next row's Activity Type Yesterday). It should
+    # NOT be included as a predictor since it is not available at prediction time.
+    # Only variables known at the time of the morning assessment are valid predictors.
     predictors = [
+        # Morning wellness assessment (covariates)
         'Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
         'Physical State', 'Sleep Quality (z)', 'Stress (z)',
         'Mood (z)', 'Mental State', 'Overall Wellbeing',
+        # Yesterday's workload data (fully known)
         'Total Distance (ACWR) Yesterday',
         'High Speed Distance (ACWR) Yesterday',
-        'Any ACWR Danger', 'Days Since Game', 'Days Until Match',
+        'Any ACWR Danger',
+        # Temporal features (known at morning assessment)
+        'Days Since Game', 'Days Until Match',
+        # Historical context
         'Medical Availability Last 14 Days',
         'Club Attendance Last 14 Days',
-        'Position', 'Activity Type Yesterday'
+        # Player profile
+        'Position',
+        # Previous day's activity (known — it already happened)
+        'Activity Type Yesterday'
     ]
 
-    model = CatBoostModel(
+    model = LogisticRegressionModel(
         target_variable='Status Decrease',
         predictory_columns=predictors,
         lag=3,

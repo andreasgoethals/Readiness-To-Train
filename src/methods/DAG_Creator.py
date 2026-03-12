@@ -828,7 +828,7 @@ class DAGCreator:
         ax.annotate(
             '', xy=(x2, y2), xytext=(x1, y1),
             arrowprops=dict(
-                arrowstyle="-|>, head_width=0.22, head_length=0.18",
+                arrowstyle="-|>, head_width=0.26, head_length=0.22",
                 color=style['color'],
                 lw=style['width'],
                 alpha=style['alpha'],
@@ -916,7 +916,7 @@ class DAGCreator:
         arrow = FancyArrowPatch(
             posA=pos_a, posB=pos_b,
             patchA=patch_a, patchB=patch_b,
-            arrowstyle="-|>,head_width=0.25,head_length=0.20",
+            arrowstyle="-|>,head_width=0.26,head_length=0.22",
             connectionstyle=connectionstyle,
             color=style['color'],
             lw=style['width'],

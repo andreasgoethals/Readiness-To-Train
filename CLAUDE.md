@@ -40,7 +40,7 @@ Standard predictive modelling asks *"given the data, what will happen?"*. This p
 
 ### Key Research Questions
 
-1. How can we accurately estimate the effect of training intensity sequences in a "Small N, Large T" environment (27 players, 156 days)?
+1. How can we accurately estimate the effect of training intensity sequences in a "Small N, Large T" environment (28 players, 597 days)?
 2. How do we handle **time-varying confounding affected by prior treatment** in observational football data?
 3. Can a causal DTR model identify the optimal individualised training sequence that maximises match-day performance?
 
@@ -63,7 +63,7 @@ For **standard ML experiments** (prediction):
 - **Status Decrease** (binary): Player's medical status worsened (Available→Attention, Available→Injured, or Attention→Injured). `1` = worsened, `0` = stable/improved.
 
 For **causal DTR experiments** (optimisation):
-- **Match-day physical intensity per minute played** (continuous): The true causal outcome. The DTR objective is to find the sequence of training intensities that maximises the expected value of this outcome.
+- **Match Intensity Yesterday** (continuous): The causal outcome Y. Computed as `sqrt(Match HID Per BIP Yesterday × Match HIE Per BIP Yesterday) × sqrt(clip(minutes_played, 15, 90) / 90)`. Playing time is clamped to [15, 90] min: the 15-min floor prevents very brief cameo appearances from being penalised too harshly; the 90-min ceiling gives full credit (weight = 1) to any player who played a full match. The square-root scale further softens the penalty for partial appearances. Range ≈ [0, ∞), only filled on the day after a match.
 
 ---
 
@@ -128,15 +128,14 @@ Readiness-To-Train/
 │
 ├── data/
 │   ├── raw/                          # Original data files (all xlsx)
-│   │   ├── Readiness_Data1.xlsx      # Readiness data season 1 (4,239 rows × 24 cols, 27 players)
-│   │   ├── Readiness_Data2.xlsx      # Readiness data extended (6,781 rows × 24 cols, 27 players)
-│   │   ├── Raw_Data.xlsx             # Full GPS/HR/wellness data (9,968 rows × 38 cols, 84 players)
-│   │   ├── Sessions.xlsx             # Session metadata (1,206 rows × 8 cols)
-│   │   ├── Games.xlsx                # Match performance data (403 rows × 8 cols, 25 players)
+│   │   ├── Readiness_Data.xlsx       # Readiness monitoring data (14,359 rows × 24 cols, 28 players)
+│   │   ├── Raw_Data.xlsx             # Full GPS/HR/wellness data (9,968 rows × 39 cols, 84 players)
+│   │   ├── Sessions.xlsx             # Session metadata (1,206 rows × 9 cols)
+│   │   ├── Games.xlsx                # Match performance data (403 rows × 9 cols, 24 players)
 │   │   ├── Raw Data Dictionary.pdf   # Auto-generated raw data documentation
 │   │   └── NDA.pdf                   # Non-disclosure agreement
 │   └── processed/                    # Preprocessed data (auto-generated)
-│       ├── RTT.xlsx                  # Multi-dataset merged & feature-engineered (4,239 rows × 45 cols)
+│       ├── RTT.xlsx                  # Multi-dataset merged & feature-engineered (14,359 rows × 45 cols)
 │       └── RTT Data Dictionary.pdf   # Auto-generated variable documentation
 │
 ├── images/                           # Generated visualizations
@@ -146,28 +145,46 @@ Readiness-To-Train/
 │       │   ├── player_1_cycle_1_detailed.png
 │       │   ├── player_1_all_cycles_schematic.png
 │       │   └── player_1_all_cycles_detailed.png
-│       └── player 2/ ... player 27/  # Players 2-27
+│       └── player 2/ ... player 28/  # Players 2-28
 │
 ├── notebooks/
-│   ├── Experiment1.ipynb             # Model comparison experiments
-│   └── raw_data_visualisation.ipynb  # Comprehensive raw data EDA (all 5 datasets)
+│   │
+│   │   # 0.x — Debugging / temporary quality checks
+│   ├── 0. Outlier_Detection.ipynb         # GPS% and ACWR extreme-outlier audit
+│   ├── 0. Processed_Data_Quality.ipynb    # Automated quality checks on RTT.xlsx
+│   ├── 0. TI_Missingness_Analysis.ipynb   # Training Intensity Yesterday missingness
+│   │
+│   │   # 1.x — Data visualisation (EDA)
+│   ├── 1.1. Raw Data Visualisation.ipynb      # EDA across all 4 raw datasets
+│   └── 1.2. Processed Data Visualisation.ipynb # EDA of processed RTT.xlsx
+│
+│   # 2.x, 3.x, ... — Experiments (one number per experiment, e.g. 2.1, 2.2)
 │
 ├── scripts/
-│   ├── Experiment1.py                # Configurable multi-model experiment runner
-│   └── Generate_Visualizations.py    # Batch DAG generation for all players
+│   ├── Experiment1.py               # Experiment 1: predict Match Intensity (single-model runner)
+│   └── generate_visualizations.py   # Batch DAG generation for all 28 players
 │
 ├── src/
 │   ├── data/
-│   │   ├── data_preprocessing.py     # Multi-dataset merge & feature engineering
-│   │   └── data_loader.py            # Dataset creation with lags & splits
+│   │   ├── data_preprocessing.py    # Data cleaning & feature engineering
+│   │   └── data_loader.py           # Dataset creation with lags & splits
 │   │
-│   └── methods/
-│       ├── DAG_Creator.py            # Causal DAG builder for longitudinal match cycles
-│       ├── LogReg.py                 # Logistic Regression model
-│       ├── XGBoost.py                # XGBoost model
-│       └── CatBoost.py              # CatBoost model with native categorical handling
+│   ├── methods/
+│   │   └── dag_creator.py           # Causal DAG builder for longitudinal match cycles
+│   │
+│   ├── models/                      # ML model classes (all share the same .train() interface)
+│   │   ├── __init__.py
+│   │   ├── lin_reg.py               # Ridge Regression (HPO via Optuna, regression + classification)
+│   │   ├── log_reg.py               # Logistic Regression (HPO via Optuna)
+│   │   ├── xgboost.py               # XGBoost (early stopping)
+│   │   ├── catboost.py              # CatBoost (native categoricals + HPO)
+│   │   └── tabpfn.py                # TabPFN v2 (in-context learning, no HPO)
+│   │
+│   └── utils/                       # Utility scripts for PDF generation
+│       ├── generate_project_overview.py  # Regenerate Project Overview.pdf
+│       └── generate_raw_data_dict.py     # Regenerate data/raw/Raw Data Dictionary.pdf
 │
-└── results/                          # Model outputs and saved figures
+└── results/                         # Model outputs and saved figures
 ```
 
 ---
@@ -176,31 +193,27 @@ Readiness-To-Train/
 
 ### Data Asset Overview
 
-The project draws on **5 raw Excel datasets** from OH Leuven's player monitoring system. The preprocessing pipeline currently operates on Readiness_Data1 only; the remaining datasets are available for exploratory analysis and future integration.
+The project draws on **4 raw Excel datasets** from OH Leuven's player monitoring system. The preprocessing pipeline uses Readiness_Data as the base dataset, merging in Raw_Data, Sessions, and Games.
 
 | Dataset | Rows | Columns | Players | Date Range | Granularity |
 |---------|------|---------|---------|------------|-------------|
-| **Readiness_Data1.xlsx** | 4,239 | 24 | 27 | 2025-06-24 → 2025-11-27 (156 days) | Daily (player-day) |
-| **Readiness_Data2.xlsx** | 6,781 | 24 | 27 | 2024-07-02 → 2026-02-17 (596 days) | Daily (player-day) |
-| **Raw_Data.xlsx** | 9,968 | 38 | 84 | 2024-05-02 → 2026-03-01 | Session-level (player-session) |
-| **Sessions.xlsx** | 1,206 | 8 | — | 2024-05-02 → 2026-03-01 | Session-level (team-session) |
-| **Games.xlsx** | 403 | 8 | 25 | 2025-07-27 → 2026-02-28 | Match-level (player-match) |
+| **Readiness_Data.xlsx** | 14,359 | 24 | 28 | 2024-07-01 → 2026-02-17 (597 days) | Daily (player-day) |
+| **Raw_Data.xlsx** | 9,968 | 39 | 84 | 2024-05-02 → 2026-03-01 | Session-level (player-session) |
+| **Sessions.xlsx** | 1,206 | 9 | — | 2024-05-02 → 2026-03-01 | Session-level (team-session) |
+| **Games.xlsx** | 403 | 9 | 24 | 2025-07-27 → 2026-02-28 (216 days, 27 match dates) | Match-level (player-match) |
 
-**Processed dataset** (auto-generated from all datasets): 4,239 rows × 45 columns → `data/processed/RTT.xlsx`
+**Processed dataset** (auto-generated from all datasets): 14,359 rows × 46 columns → `data/processed/RTT.xlsx`
 
 #### Player Overlap Across Datasets
 
-- Readiness_Data1 ∩ Readiness_Data2: **26** shared players (1 unique to each)
-- Readiness_Data1 ∩ Raw_Data: **27** (all Readiness_Data1 players appear in Raw_Data)
-- Raw_Data has 84 total players (57 not in the readiness datasets)
-- Games has 25 players, **23** overlap with Readiness_Data1
-- All 4 player-level datasets overlap: **23** players
+- Readiness_Data ∩ Raw_Data: **28** (all Readiness_Data players appear in Raw_Data)
+- Raw_Data has 84 total players (56 not in Readiness_Data)
+- Games has 24 players; overlap with Readiness_Data: **23** players
+- All 3 player-level datasets overlap: **23** players
 
 ### Raw Dataset Schemas
 
-#### Readiness_Data1.xlsx / Readiness_Data2.xlsx (identical columns)
-
-Both share the same 24-column structure — Readiness_Data2 is the extended temporal version.
+#### Readiness_Data.xlsx (24 columns)
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -218,7 +231,7 @@ Both share the same 24-column structure — Readiness_Data2 is the extended temp
 | Fatigue (z), Readiness (z), Soreness (z) | float | Physical wellness z-scores (28-day rolling) |
 | Sleep Quality (z), Stress (z), Mood (z) | float | Mental wellness z-scores (28-day rolling) |
 
-#### Raw_Data.xlsx (38 columns)
+#### Raw_Data.xlsx (39 columns)
 
 Detailed session-level GPS, heart rate, and subjective wellness data for 84 players.
 
@@ -233,7 +246,7 @@ Detailed session-level GPS, heart rate, and subjective wellness data for 84 play
 | Subjective | RPE, stress_level, mood, hours_sleep, sleep_quality, readiness, muscle_soreness | Self-reported wellness (raw scores, not z-scored) |
 | Heart Rate | avg_heartrate, heart_rate_exertion, max_heartrate, time_in_heartrate_zone1–6 | HR monitoring across 6 intensity zones |
 
-#### Sessions.xlsx (8 columns)
+#### Sessions.xlsx (9 columns)
 
 Team-level session metadata (no player-level data).
 
@@ -248,7 +261,7 @@ Team-level session metadata (no player-level data).
 | workout_type | string | Workout classification |
 | Reason | string | Session reason |
 
-#### Games.xlsx (8 columns)
+#### Games.xlsx (9 columns)
 
 Match-level performance data per player.
 
@@ -267,51 +280,54 @@ Match-level performance data per player.
 
 | Category | Features | Encoding | Source |
 |----------|----------|----------|--------|
-| External Load (GPS) | Total Distance, High-Speed Distance, Decelerations, Sprints | ACWR (7:42 EMA), % of personal benchmarks | Readiness_Data1 |
+| External Load (GPS) | Total Distance, High-Speed Distance, Decelerations, Sprints | ACWR (7:42 EMA), % of personal benchmarks | Readiness_Data |
 | Training Intensity | Training Intensity Yesterday | Composite: tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100). Soft cap, range [0, 1) | Engineered from GPS % |
 | Raw GPS/HR (Yesterday) | Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion | Absolute values, shifted +1 day | Raw_Data |
-| Match Performance (Yesterday) | High Intensity Per BIP, HIT Efforts Per BIP, Minutes Played | Continuous, only filled day after match | Games |
-| Subjective Wellbeing | Fatigue, Soreness, Sleep Quality, Stress, Mood | Individualised 28-day rolling-window Z-scores | Readiness_Data1 |
+| Match Performance (Yesterday) | Match HID Per BIP, Match HIE Per BIP, Match Minutes Played | Continuous, only filled day after match | Games |
+| Match Intensity (Yesterday) | Match Intensity Yesterday | Causal outcome Y: geometric mean of HID and HIE Per BIP × min(minutes, 60)/60. Range ≈ [0, ∞) | Engineered from Games |
+| Subjective Wellbeing | Fatigue, Soreness, Sleep Quality, Stress, Mood | Individualised 28-day rolling-window Z-scores | Readiness_Data |
 | Composite Scores | Physical State, Mental State, Overall Wellbeing | Aggregated from subjective sub-scales | Engineered |
-| Contextual / Medical | Medical availability %, Club attendance %, Activity reason, Medical status | Categorical | Readiness_Data1 |
+| Contextual / Medical | Medical availability %, Club attendance %, Activity reason, Medical status | Categorical | Readiness_Data |
 | Temporal Context | Days Since Game, Days Until Match | Integer; Days Since Game ≥ 1, Days Until Match ≥ 0 |
 
 ### 1. Data Preprocessing (`data_preprocessing.py`)
 
 The preprocessing pipeline merges all raw datasets into a single analysis-ready file.
 
-**Input:** `data/raw/Readiness_Data1.xlsx`, `Raw_Data.xlsx`, `Sessions.xlsx`, `Games.xlsx`
+**Input:** `data/raw/Readiness_Data.xlsx`, `Raw_Data.xlsx`, `Sessions.xlsx`, `Games.xlsx`
 **Output:** `data/processed/RTT.xlsx` + `RTT Data Dictionary.pdf`
 
 **Transformations:**
-1. Load all raw xlsx files (Readiness_Data1 as base, Raw_Data, Sessions, Games)
-2. Player ID mapping (complex keys → sequential IDs 1-27)
+1. Load all raw xlsx files (Readiness_Data as base, Raw_Data, Sessions, Games)
+2. Player ID mapping (complex keys → sequential IDs 1-28)
 3. Column renaming for clarity
 4. Percentage column cleaning (string → integer)
 5. Comment categorization (recovery, discomfort, stiffness, etc.)
-6. **Merge Raw_Data** GPS/HR columns (total_minutes, total_distance, high_speed_distance, avg_heartrate, heart_rate_exertion) — aggregated per player-day (sum for volume, weighted mean for HR), shifted +1 day so day-of data becomes "yesterday"
-7. **Merge Games** match performance columns (High Intensity Per BIP, HIT Efforts Per BIP, minutes_played) — shifted +1 day (match data → day after match)
-8. Composite scores (Physical State, Mental State, Overall Wellbeing)
-9. Activity Type Today (session type on day t, derived from next row's Activity Type Yesterday)
-10. Days Since Game (days since last *completed* match, minimum 1, never 0)
-11. Days Until Match (days until next scheduled match, 0 on match day)
-12. Match Day (team-level) and Selected (player-level)
-13. Status Decrease detection
-14. ACWR danger zone flagging (any ACWR > 1.5)
-15. Training Intensity Yesterday composite (tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100), soft cap in [0, 1))
-16. Column reordering into temporal groups
-17. Save RTT.xlsx + auto-generate PDF data dictionary
+6. **Fill Activity Type Yesterday from Raw_Data** — for rows where Readiness_Data's `Reason` field is blank, look up the player's entry in Raw_Data on the same date (t-1) and use that `Reason` value (modal value across drill records).
+7. **Fill free days** — rows where Activity Type Yesterday is still NaN AND all GPS % columns are also NaN are true rest days. Set Activity Type Yesterday = `'Free'`, GPS % columns = `0`. Training Intensity Yesterday will then be `tanh(0) = 0`. Rows where Activity Type is NaN but GPS % data exists are data-entry artefacts and are left as-is.
+8. **Merge Raw_Data** GPS/HR columns (total_minutes, total_distance, high_speed_distance, avg_heartrate, heart_rate_exertion) — aggregated per player-day (sum for volume, weighted mean for HR), shifted +1 day so day-of data becomes "yesterday"
+9. **Merge Games** match performance columns (High Intensity Per BIP, HIT Efforts Per BIP, minutes_played) — shifted +1 day (match data → day after match)
+10. Composite scores (Physical State, Mental State, Overall Wellbeing)
+11. Activity Type Today (session type on day t, derived from next row's Activity Type Yesterday)
+12. Days Since Game (days since last *completed* match, minimum 1, never 0)
+13. Days Until Match (days until next scheduled match, 0 on match day)
+14. Match Day (team-level) and Selected (player-level)
+15. Status Decrease detection
+16. ACWR danger zone flagging (any ACWR > 1.5)
+17. Training Intensity Yesterday composite (tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100), soft cap in [0, 1)); free days yield 0.0
+18. Column reordering into temporal groups
+19. Save RTT.xlsx + auto-generate PDF data dictionary
 
 **Processed Dataset Columns (45 columns, in order):**
 
 | Group | Columns | Temporal Position | Source |
 |-------|---------|-------------------|--------|
-| Identifiers | Date, Playerkey, Player ID, Position | Always known | RD1 |
-| Historical | Medical Availability Last 14 Days, Club Attendance Last 14 Days | Before day t | RD1 |
-| Yesterday (t-1) RD1 | ACWR (×4), Any ACWR Danger, Activity Type Yesterday, Comment Yesterday, Comment Category Yesterday, GPS % (×5), Training Intensity Yesterday, Perceived Exertion Yesterday | Before day t | RD1 |
+| Identifiers | Date, Playerkey, Player ID, Position | Always known | RD |
+| Historical | Medical Availability Last 14 Days, Club Attendance Last 14 Days | Before day t | RD |
+| Yesterday (t-1) RD | ACWR (×4), Any ACWR Danger, Activity Type Yesterday, Comment Yesterday, Comment Category Yesterday, GPS % (×5), Training Intensity Yesterday, Perceived Exertion Yesterday | Before day t | RD |
 | Yesterday (t-1) Raw | Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion | Before day t | Raw_Data (shifted) |
-| Yesterday (t-1) Games | Match High Intensity Per BIP, Match HIT Efforts Per BIP, Match Minutes Played | Before day t (only day after match) | Games (shifted) |
-| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match, Match Day | Covariates Lₜ (Match Day = schedule info, known in advance) | RD1 + Engineered |
+| Yesterday (t-1) Games | Match HID Per BIP, Match HIE Per BIP, Match Minutes Played, **Match Intensity** | Before day t (only day after match) | Games (shifted) + Engineered |
+| Morning (t) | Status, Status Decrease, Fatigue/Readiness/Soreness (z), Physical State, Sleep Quality/Stress/Mood (z), Mental State, Overall Wellbeing, Days Since Game, Days Until Match, Match Day | Covariates Lₜ (Match Day = schedule info, known in advance) | RD + Engineered |
 | Post-assessment (t) | Activity Type Today, Selected | Treatment Aₜ — assigned after morning assessment | Engineered |
 
 **Usage:**
@@ -407,7 +423,26 @@ data = loader.create_dataset(
 
 ## Machine Learning Methods
 
-### Method 1: Logistic Regression (`LogReg.py`)
+### Method 1: Linear Regression (`src/models/lin_reg.py`)
+
+**Best For:** Interpretability, regression targets (continuous outcomes), fast baseline with L2 regularisation
+
+Ridge regression (L2-regularised) for continuous targets; `RidgeClassifier` as automatic fallback for binary/multi-class targets. Regularisation strength `alpha` is optimised via Optuna. Requires standardisation because the Ridge penalty is scale-sensitive.
+
+**Key Parameters:**
+```python
+LinearRegressionModel(
+    target_variable='Match Intensity Yesterday',
+    predictory_columns=[...],
+    lag=3,
+    hpo_trials=50,                 # Optuna trials for alpha (1e-4 → 1e3, log scale)
+    alpha=1.0,                     # Used when hpo_trials=0
+    categorical_encoding='one-hot', # Recommended for linear models
+    standardize=True               # Required — Ridge is scale-sensitive
+)
+```
+
+### Method 2: Logistic Regression (`src/models/log_reg.py`)
 
 **Best For:** Interpretability, baseline performance, feature importance analysis
 
@@ -424,7 +459,7 @@ LogisticRegressionModel(
 )
 ```
 
-### Method 2: XGBoost (`XGBoost.py`)
+### Method 3: XGBoost (`src/models/xgboost.py`)
 
 **Best For:** Maximizing predictive performance, handling non-linear relationships
 
@@ -443,7 +478,7 @@ XGBoostModel(
 )
 ```
 
-### Method 3: CatBoost (`CatBoost.py`)
+### Method 4: CatBoost (`src/models/catboost.py`)
 
 **Best For:** Native categorical feature handling, robust gradient boosting with automatic overfitting detection
 
@@ -453,7 +488,7 @@ CatBoostModel(
     target_variable='Status Decrease',
     predictory_columns=[...],
     lag=3,
-    hpo_trials=20,                # Optuna hyperparameter optimization
+    hpo_trials=50,                # Optuna hyperparameter optimization
     iterations=500,
     depth=6,
     learning_rate=0.1,
@@ -462,15 +497,36 @@ CatBoostModel(
 )
 ```
 
-All three models support `target_horizon` for predicting future outcomes:
+### Method 5: TabPFN (`src/models/tabpfn.py`)
+
+**Best For:** Small tabular datasets, zero-shot classification, no hyperparameter tuning required
+
+TabPFN (Prior-Data Fitted Networks) is a transformer pre-trained on synthetic tabular datasets. It performs **in-context learning** — no iterative training at fit time. The model infers predictions directly from the training set, making it extremely fast and often competitive on small datasets.
+
+**Key Parameters:**
+```python
+TabPFNModel(
+    target_variable='Status Decrease',
+    predictory_columns=[...],
+    lag=3,
+    device='auto',                # 'auto', 'cpu', or 'cuda'
+    n_estimators=4,               # Number of ensemble members
+    categorical_encoding='label', # Label encoding for categorical features
+    standardize=False             # TabPFN handles its own normalization
+)
+```
+
+**Note:** TabPFN supports both classification (`TabPFNClassifier`) and regression (`TabPFNRegressor`) — task type is auto-detected from the target. No HPO is performed (hyperparameters are fixed by the pre-trained model). Install with: `pip install tabpfn`
+
+All five models support `target_horizon` for predicting future outcomes:
 ```python
 model = XGBoostModel(
-    target_horizon=1,  # Predict tomorrow's Status Decrease using today's features
+    target_horizon=1,  # Predict tomorrow's value using today's features
     ...
 )
 ```
 
-### Causal DAG Builder (`DAG_Creator.py`)
+### Causal DAG Builder (`dag_creator.py`)
 
 **Best For:** Defining the causal graph structure for longitudinal causal inference and DTR methods
 
@@ -485,7 +541,7 @@ The `DAGCreator` class is **player-specific**: instantiated once per player, it 
 
 **Constructor:**
 ```python
-from src.methods.DAG_Creator import DAGCreator
+from src.methods.dag_creator import DAGCreator
 
 creator = DAGCreator(
     player_id=1,
@@ -597,7 +653,7 @@ The causal estimation strategy uses G-methods (Robins, 1986), designed for setti
 
 ### Statistical Regime: Small N, Large T
 
-Only 27 players but moderately long time series (~156 days each). The signal is likely dominated by **within-player dynamics**. Models must be parsimonious or leverage partial pooling to avoid overfitting. Methods should balance individual-level tailoring with limited sample size.
+Only 28 players but moderately long time series (~597 days total). The signal is likely dominated by **within-player dynamics**. Models must be parsimonious or leverage partial pooling to avoid overfitting. Methods should balance individual-level tailoring with limited sample size.
 
 ---
 
@@ -606,7 +662,7 @@ Only 27 players but moderately long time series (~156 days each). The signal is 
 ### Quick Start
 
 ```python
-from src.methods.XGBoost import XGBoostModel
+from src.models.xgboost import XGBoostModel
 
 # IMPORTANT: Only use variables available at prediction time as predictors.
 # Activity Type Today / Training Intensity is determined AFTER the morning assessment.
@@ -629,9 +685,10 @@ predictors = [
     'Avg Heart Rate Yesterday',
     'Heart Rate Exertion Yesterday',
     # New columns from Games (match performance — only filled day after match)
-    'Match High Intensity Per BIP Yesterday',
-    'Match HIT Efforts Per BIP Yesterday',
+    'Match HID Per BIP Yesterday',
+    'Match HIE Per BIP Yesterday',
     'Match Minutes Played Yesterday',
+    'Match Intensity Yesterday',   # causal outcome Y for DTR experiments
 ]
 
 model = XGBoostModel(
@@ -649,21 +706,31 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 
 ### Notebooks
 
+**Naming convention:** `0.` = debugging / temporary, `1.x` = data visualisation, `2.x` / `3.x` = experiments
+
 | Notebook | Purpose |
 |----------|---------|
-| `Experiment1.ipynb` | Interactive model comparison experiments (LogReg, XGBoost, CatBoost) |
-| `raw_data_visualisation.ipynb` | Comprehensive EDA across all 5 raw datasets: missingness analysis, dataset linkage (Venn diagrams, ER diagram), temporal coverage, wellness/GPS distributions, player profiles (radar charts), and cross-dataset correlation analysis |
+| `0. Outlier_Detection.ipynb` | GPS benchmark % and ACWR extreme-outlier audit. Tukey 3×IQR + per-player z-score detection. Saves `data/processed/outlier_flagged_rows.xlsx`. |
+| `0. Processed_Data_Quality.ipynb` | Automated quality checks on RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flags, encoding validation. |
+| `0. TI_Missingness_Analysis.ipynb` | Missingness analysis for Training Intensity Yesterday; investigates free-day fill logic and NaN patterns. |
+| `1.1. Raw Data Visualisation.ipynb` | Comprehensive EDA across all 4 raw datasets: missingness, dataset linkage (Venn diagrams), temporal coverage, wellness/GPS distributions, player profiles (radar charts), cross-dataset correlations. |
+| `1.2. Processed Data Visualisation.ipynb` | EDA of processed RTT.xlsx: variable distributions, temporal patterns, per-player profiles, correlation heatmaps. |
 
 ### Running from Command Line
 
 ```bash
 cd "path/to/Readiness-To-Train"
 python src/data/data_preprocessing.py         # Run multi-dataset preprocessing -> RTT.xlsx
-python src/methods/LogReg.py                  # Run Logistic Regression
-python src/methods/XGBoost.py                 # Run XGBoost
-python src/methods/DAG_Creator.py             # Run DAG demos + generate visualizations
-python scripts/Experiment1.py                 # Run all-model comparison experiment
-python scripts/Generate_Visualizations.py     # Generate DAGs for all 27 players
+python scripts/generate_raw_data_dict.py      # Regenerate data/raw/Raw Data Dictionary.pdf
+python src/models/log_reg.py                  # Run Logistic Regression
+python src/models/xgboost.py                  # Run XGBoost
+python src/models/catboost.py                 # Run CatBoost
+python src/models/tabpfn.py                   # Run TabPFN
+python src/methods/dag_creator.py             # Run DAG demos + generate visualizations
+python src/utils/generate_project_overview.py # Regenerate Project Overview.pdf
+python src/utils/generate_raw_data_dict.py    # Regenerate data/raw/Raw Data Dictionary.pdf
+python scripts/Experiment1.py                 # Run Experiment 1 demo (XGBoost, lag=3)
+python scripts/generate_visualizations.py     # Generate DAGs for all 28 players
 ```
 
 ---
@@ -736,41 +803,55 @@ create_dataset(
 
 ### Model Classes
 
-`LogisticRegressionModel`, `XGBoostModel`, and `CatBoostModel` all share:
+`LinearRegressionModel`, `LogisticRegressionModel`, `XGBoostModel`, `CatBoostModel`, and `TabPFNModel` all share:
 ```python
 model.train() -> Dict  # Returns predictions, metrics, model weights
 ```
 
-### Experiment Runner (`scripts/Experiment1.py`)
+### Experiment 1 Runner (`scripts/Experiment1.py`)
+
+Predicts **Match Intensity Yesterday** at t+1 (next match) from morning covariates at t.
+Single-model interface — call once per model type and compare results in a notebook.
 
 ```python
 from scripts.Experiment1 import run_experiment
 
-# Inclusion-based: specify exact predictors
 results = run_experiment(
-    target='Status Decrease',
-    lag=3,
-    predictory_columns=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
-                        'Physical State', 'Days Since Game'],
-)
-
-# Exclusion-based: exclude specific columns, use all others
-results = run_experiment(
-    target='Status Decrease',
-    lag=3,
-    exclude_columns=['Comment Yesterday', 'Activity Type Today'],
+    covariates=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
+                'Training Intensity Yesterday', 'Days Until Match', ...],
+    lag=3,            # lag=1: only row t; lag=3: rows t, t-1, t-2 (per-player)
+    model_type='xgboost',   # one of 'lin_reg', 'xgboost', 'catboost', 'tabpfn'
+    hpo_trials=20,    # override any model default via **model_kwargs
 )
 ```
 
-**Parameters:** `target`, `lag`, `predictory_columns`, `exclude_columns`, `target_horizon`, `test_size`, `val_size`, `hpo_trials`, `random_state`, `verbose`.
+**Parameters:** `covariates`, `lag` (≥ 1), `model_type`, `test_size`, `val_size`, `random_state`, `verbose`, `**model_kwargs`.
 
-**Returns:** `{'config': {...}, 'models': {...}, 'comparison': [...], 'summary': {...}}`
+**Returns:**
+```python
+{
+    'config':        dict,   # all run parameters
+    'y_train_true':  ndarray,
+    'y_train_pred':  ndarray,
+    'y_val_true':    ndarray,  # only if val set non-empty
+    'y_val_pred':    ndarray,
+    'y_test_true':   ndarray,
+    'y_test_pred':   ndarray,
+    'meta_test':     pd.DataFrame,  # Date + Player ID for test rows
+    'metrics':       dict,   # mse, rmse, mae, r2, pearson_r/p, null_rmse, train_rmse, n_test, n_train
+    'per_player':    dict,   # Player ID → {n, rmse, r2}
+    'model_weights': dict,   # coefficients/importances + feature_names
+    'feature_names': list,
+    'best_params':   dict,
+    'task_type':     str,    # 'regression'
+}
+```
 
-### DAG Batch Generator (`scripts/Generate_Visualizations.py`)
+### DAG Batch Generator (`scripts/generate_visualizations.py`)
 
 ```python
-from scripts.Generate_Visualizations import generate_all_player_dags
-generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/player <id>/
+from scripts.generate_visualizations import generate_all_player_dags
+generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/player &lt;id&gt;/
 ```
 
 ---
@@ -787,9 +868,9 @@ generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/playe
 
 **Available at prediction time (safe as predictors / covariates Lₜ):**
 - All wellness z-scores (morning assessment)
-- All "Yesterday" columns from Readiness_Data1 (ACWR, GPS %, Training Intensity Yesterday, RPE, comments)
+- All "Yesterday" columns from Readiness_Data (ACWR, GPS %, Training Intensity Yesterday, RPE, comments)
 - All "Yesterday" columns from Raw_Data (Total Minutes, Total Distance (m), High Speed Distance (m), Avg Heart Rate, Heart Rate Exertion)
-- All "Yesterday" columns from Games (Match High Intensity Per BIP, Match HIT Efforts Per BIP, Match Minutes Played) — only filled day after match
+- All "Yesterday" columns from Games (Match HID Per BIP, Match HIE Per BIP, Match Minutes Played) — only filled day after match
 - Days Since Game, Days Until Match, Match Day (known in the morning from schedule)
 - Medical Availability, Club Attendance (historical)
 - Position (static)
@@ -867,6 +948,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-03-07
+**Last Updated:** 2026-03-11
 **Python Version:** 3.8+
-**Key Dependencies:** pandas, numpy, scipy, scikit-learn, xgboost, catboost, optuna, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2
+**Key Dependencies:** pandas, numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2
