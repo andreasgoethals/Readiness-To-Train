@@ -388,6 +388,66 @@ def merge_games_data(df, games):
     return df
 
 
+def add_match_intensity_personal_stats(df):
+    """
+    Add two player-personalised match intensity statistics.
+
+    Match Intensity Personal Average
+        Expanding mean of 'Match Intensity Yesterday' per player, computed
+        across all rows in chronological order. Because 'Match Intensity
+        Yesterday' is only non-NaN the day after a match, this naturally:
+          - Stays NaN until a player's first match appears in the data.
+          - Updates the day after each match (to include that match).
+          - Remains constant between matches (pandas expanding mean skips NaN).
+        Available every morning as a covariate — it describes the player's
+        historical match-intensity baseline from all prior matches.
+
+    Match Intensity Personal Deviation
+        Filled only on match days: (current match intensity) − (Personal Average).
+        'Current match intensity' is recovered by shifting 'Match Intensity
+        Yesterday' back by one row within each player group, which places the
+        match-day result on the match day itself (since it otherwise only
+        appears the following morning).
+        NaN when Personal Average is NaN (player's first match ever).
+        Use as a target variable to predict how far above or below a player's
+        own historical average they will perform on a given match day.
+    """
+    print("\nAdding Match Intensity personal statistics...")
+
+    # ── Match Intensity Personal Average ─────────────────────────────────────
+    # expanding().mean() with skipna=True (pandas default):
+    #   - NaN rows (non-match days) are ignored in the rolling numerator
+    #   - Before the first match: result is NaN (no non-NaN values yet)
+    #   - Day after match 1: result = match_1_intensity (first non-NaN)
+    #   - Day after match 2: result = mean(match_1, match_2)
+    #   - On match day k itself: result = mean(matches 1..k-1), because today's
+    #     match intensity does not appear until the following row.
+    df['Match Intensity Personal Average'] = (
+        df.groupby('Playerkey')['Match Intensity Yesterday']
+        .transform(lambda s: s.expanding(min_periods=1).mean())
+    )
+    n_avg_valid = df['Match Intensity Personal Average'].notna().sum()
+    print(f"  Match Intensity Personal Average: {n_avg_valid:,} valid entries")
+
+    # ── Match Intensity Personal Deviation ───────────────────────────────────
+    # Shift 'Match Intensity Yesterday' back by 1 within each player group to
+    # recover today's match intensity on the match day itself (it normally
+    # appears in the *next* row as 'Match Intensity Yesterday').
+    _match_today = (
+        df.groupby('Playerkey')['Match Intensity Yesterday']
+        .transform(lambda s: s.shift(-1))
+    )
+    df['Match Intensity Personal Deviation'] = np.where(
+        _match_today.notna() & df['Match Intensity Personal Average'].notna(),
+        _match_today - df['Match Intensity Personal Average'],
+        np.nan,
+    )
+    n_dev_valid = df['Match Intensity Personal Deviation'].notna().sum()
+    print(f"  Match Intensity Personal Deviation: {n_dev_valid:,} valid entries")
+
+    return df
+
+
 # =============================================================================
 # COMPOSITE SCORES
 # =============================================================================
@@ -845,6 +905,11 @@ def reorder_columns(df):
         'Match HIE Per BIP Yesterday',
         'Match Minutes Played Yesterday',
         'Match Intensity Yesterday',
+        # Personalised running statistics derived from all prior matches.
+        # Personal Average: covariate (historical baseline, available every morning).
+        # Personal Deviation: post-match outcome (filled on match days only).
+        'Match Intensity Personal Average',
+        'Match Intensity Personal Deviation',
         # --- GROUP 6: Today (t) morning assessment — COVARIATES ---
         'Status',
         'Status Decrease',
@@ -1153,6 +1218,8 @@ def generate_documentation_pdf(df, player_mapping, output_dir):
         ['Match HIE Per BIP\nYesterday', 'High-intensity efforts per Ball-In-Play minute. Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
         ['Match Minutes Played\nYesterday', 'Total minutes played in match. Only filled day after match. From Games, shifted +1 day.', False, c_prev_games],
         ['Match Intensity\nYesterday', 'Causal outcome Y: geometric mean of HID Per BIP and HIE Per BIP, multiplied by sqrt(clip(minutes_played, 15, 90)/90): playing time clamped to [15, 90] min. Continuous, range ~[0, ∞). Only filled day after match.', True, c_prev_games],
+        ['Match Intensity\nPersonal Average', 'Player-specific expanding mean of Match Intensity Yesterday across all prior matches. Updates the day after each match; constant between matches; NaN until the player\'s first match. Covariate available every morning.', True, c_prev_games],
+        ['Match Intensity\nPersonal Deviation', 'Match-day only: (current match intensity) − (Personal Average). Measures how far above or below their own historical average a player performs. NaN when Personal Average is NaN or the player did not participate. Use as a target for relative performance prediction.', True, c_prev_games],
         ['Status', 'Current medical status (Available, Attention, Injured, Sick, Absent)', False, c_current],
         ['Status Decrease', 'Binary: 1 if status worsened vs previous day', True, c_current],
         ['Fatigue (z)', 'Self-reported fatigue z-score (28-day rolling window)', False, c_current],
@@ -1338,6 +1405,7 @@ def preprocess_data(date_min='2025-07-27', date_max='2026-02-28', benchmark_cap=
     3.  Comment categorization
     4.  Merge Raw_Data GPS/HR columns (shifted +1 day)
     5.  Merge Games match performance columns (shifted +1 day)
+    5b. Match Intensity personal statistics (Personal Average & Deviation)
     6.  Composite wellness scores
     7.  Temporal features (Activity Type Today, Days Since/Until Game)
     8.  Match day features
@@ -1379,6 +1447,9 @@ def preprocess_data(date_min='2025-07-27', date_max='2026-02-28', benchmark_cap=
 
     # 5. Merge Games (match performance — shifted to "yesterday")
     df = merge_games_data(df, data['games'])
+
+    # 5b. Match Intensity personal statistics (depends on Games merge)
+    df = add_match_intensity_personal_stats(df)
 
     # 6. Composite scores
     df = add_physical_state(df)

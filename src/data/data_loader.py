@@ -280,7 +280,10 @@ class ReadinessDataLoader:
         # regardless of how pandas infers their dtype
         known_categorical = {
             'Position', 'Activity Type Yesterday', 'Comment Category Yesterday',
-            'Status', 'Activity Type Today', 'Comment Yesterday'
+            'Status', 'Activity Type Today', 'Comment Yesterday',
+            'Player ID',   # Integer IDs 1-28 are nominal labels, not ordinal numbers.
+                           # Player 4 is NOT "twice Player 2" — must be one-hot or label
+                           # encoded, never treated as a continuous numeric feature.
         }
 
         # Warn if Activity Type Today is used as a predictor — it is determined
@@ -1281,9 +1284,13 @@ class ReadinessDataLoader:
             drop_cols.extend(treatment_columns)
         df_lagged = df_lagged.dropna(subset=drop_cols).copy()
 
-        # Ensure target remains integer for classification tasks
+        # Ensure target remains integer for binary classification tasks only.
+        # Only cast to int when the shifted values are strictly 0/1 — continuous
+        # regression targets (e.g. Match Intensity Yesterday) must not be cast.
         if target_horizon > 0 and df_lagged[target_variable].dtype == float:
-            df_lagged[target_variable] = df_lagged[target_variable].astype(int)
+            unique_vals = set(df_lagged[target_variable].dropna().unique())
+            if unique_vals.issubset({0, 1, 0.0, 1.0}):
+                df_lagged[target_variable] = df_lagged[target_variable].astype(int)
 
         # =====================================================================
         # Step 6: *** SPLIT FIRST *** — THE MOST CRITICAL STEP
