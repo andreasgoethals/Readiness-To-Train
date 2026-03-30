@@ -554,6 +554,103 @@ def build_pdf(output_path: Path):
            ], S,
            col_widths=[8.0*cm, 8.2*cm])
 
+    # ── 10. Experiments ───────────────────────────────────────────────────────
+    _section(story, '10. Experiments', S)
+
+    story.append(Paragraph(
+        'Three experiments operationalise the causal framework, each building on '
+        'the previous. The processed dataset (RTT.xlsx, 14,359 rows) is shared '
+        'across all experiments. All models support GPU acceleration; '
+        'XGBoost, CatBoost, and TabPFN run on CUDA by default.',
+        S['body']))
+
+    _table(story,
+           ['Experiment', 'Target Variable', 'Task', 'Models', 'Role'],
+           [
+               ['1 &#8212; Match Intensity\n(reference only)',
+                'Match Intensity Yesterday\n(continuous, range [0,&#8734;))',
+                'Regression',
+                'Lin Reg, XGBoost,\nCatBoost, TabPFN',
+                'Baseline only. Too many unobserved confounders (tactical, '
+                'psychological, opponent quality) between training load and '
+                'match performance for valid causal identification. Retained '
+                'for documentation.'],
+               ['2 &#8212; Treatment Policy\n(primary)',
+                'Training Intensity Yesterday\n(continuous [0,1), target_horizon=1)',
+                'Regression',
+                'Lin Reg, XGBoost,\nCatBoost, TabPFN',
+                'Propensity model &#960;(A&#8346; | L&#8346;). Models the '
+                'coaching load-assignment policy from morning covariates. '
+                'Foundation for IPTW/MSM and doubly-robust causal estimation. '
+                'Includes SHAP analysis and per-player breakdown.'],
+               ['3 &#8212; Load Response\n(primary)',
+                'Status Decrease\n(binary, target_horizon=0/1)',
+                'Classification',
+                'Log Reg, XGBoost,\nCatBoost',
+                'Outcome model Q(A,L). Two modes: (a) prediction &#8212; '
+                'next-day early-warning system; (b) causal_framing &#8212; '
+                'diagnostic with Training Intensity Yesterday as covariate. '
+                'Raw coefficients biased by confounding by indication; valid '
+                'estimates require G-computation or IPTW.'],
+           ], S,
+           col_widths=[3.0*cm, 3.2*cm, 2.0*cm, 2.5*cm, 5.5*cm])
+
+    story.append(Paragraph('<b>Causal analysis pipeline (planned):</b>', S['body']))
+
+    story.append(Paragraph(
+        '<b>Step 1 (Exp 2):</b> Fit propensity model '
+        '&#960;&#770;(A&#8346; | L&#8346;) &#8594; compute IPTW weights '
+        'w&#7522; = p(A&#7522;) / &#960;&#770;(A&#7522; | L&#7522;).',
+        S['bullet']))
+
+    story.append(Paragraph(
+        '<b>Step 2 (Exp 3):</b> Fit outcome model '
+        'Q(A, L) = E[Y | A&#8346;&#8722;&#8321;, L&#8346;] in causal_framing '
+        'mode &#8594; G-computation: E[Y&#7491;] = (1/n) &#8721;&#7522; Q(a, L&#7522;).',
+        S['bullet']))
+
+    story.append(Paragraph(
+        '<b>Step 3:</b> IPTW Marginal Structural Model &#8594; fit '
+        'E[Y | A] on the reweighted pseudopopulation to obtain an unconfounded '
+        'dose-response curve.',
+        S['bullet']))
+
+    story.append(Paragraph(
+        '<b>Step 4 (DTR):</b> Q-learning or dWOLS across the full match cycle '
+        '&#8594; optimal regime d*(L&#8346;) for each player and day.',
+        S['bullet']))
+
+    story.append(Spacer(1, 4))
+
+    # ── 11. ML Methods & GPU ──────────────────────────────────────────────────
+    _section(story, '11. ML Methods & GPU Acceleration', S)
+
+    _table(story,
+           ['Model', 'Task', 'HPO', 'GPU', 'Key Strength'],
+           [
+               ['Ridge Regression', 'Regression + Classification',
+                'Optuna (alpha)', 'No', 'Interpretable coefficients; SHAP linear explainer'],
+               ['Logistic Regression', 'Classification',
+                'Optuna (C)', 'No', 'Log-odds coefficients; causal_framing diagnostic'],
+               ['XGBoost', 'Both',
+                'Early stopping', 'device=\'cuda\'', 'High performance; SHAP TreeExplainer'],
+               ['CatBoost', 'Both',
+                'Optuna (50 trials)', 'task_type=\'GPU\'',
+                'Native categorical support; robust overfitting detection'],
+               ['TabPFN v2', 'Both',
+                'None (in-context)', 'device=\'cuda\'',
+                'Zero-shot in-context learning; no iterative training'],
+           ], S,
+           col_widths=[2.8*cm, 3.0*cm, 2.5*cm, 2.4*cm, 5.5*cm])
+
+    story.append(Paragraph(
+        'All GPU settings are configured in <i>scripts/Experiment2.py</i> and '
+        '<i>scripts/Experiment3.py</i> MODEL_DEFAULTS. SHAP (SHapley Additive '
+        'exPlanations) analysis is included in Experiment 2 for tree-based and '
+        'linear models, providing directional feature attributions beyond native '
+        'importance scores. TabPFN is excluded from SHAP (black-box transformer).',
+        S['body']))
+
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.5 * cm))
     _hr(story)

@@ -249,7 +249,8 @@ class LogisticRegressionModel:
             'y_test_pred': y_test_pred,
             'model_weights': model_weights,
             'task_type': self.task_type,
-            'best_params': self.best_params if self.hpo_trials > 0 else {'C': C, 'penalty': penalty}
+            'best_params': self.best_params if self.hpo_trials > 0 else {'C': C, 'penalty': penalty},
+            'trained_model': self.model,
         }
 
         # Add validation predictions if available

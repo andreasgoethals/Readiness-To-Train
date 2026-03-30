@@ -57,6 +57,7 @@ class CatBoostModel:
         iterations: int = 500,
         depth: int = 6,
         learning_rate: float = 0.1,
+        task_type: str = 'CPU',
         random_state: int = 42
     ):
         if not CATBOOST_AVAILABLE:
@@ -77,12 +78,16 @@ class CatBoostModel:
         self.iterations = iterations
         self.depth = depth
         self.learning_rate = learning_rate
+        # NOTE: catboost_task_type = 'CPU' or 'GPU' (CatBoost's own parameter).
+        # self.task_type is reserved for ML task detection ('classification'/'regression')
+        # and must NOT collide with this GPU setting.
+        self.catboost_task_type = task_type
         self.random_state = random_state
 
         self.data_loader = ReadinessDataLoader()
         self.model = None
         self.data = None
-        self.task_type = None
+        self.task_type = None   # set by _detect_task_type in _load_data
         self.best_params = None
         self.cat_features_indices = None
 
@@ -131,7 +136,7 @@ class CatBoostModel:
 
     def _objective(self, trial: optuna.Trial) -> float:
         """Optuna objective function."""
-        iterations = trial.suggest_int('iterations', 100, 1000)
+        iterations = trial.suggest_int('iterations', 50, 300)
         depth = trial.suggest_int('depth', 3, 10)
         learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
         l2_leaf_reg = trial.suggest_float('l2_leaf_reg', 1.0, 10.0)
@@ -149,6 +154,7 @@ class CatBoostModel:
                 verbose=0,
                 auto_class_weights='Balanced',
                 cat_features=self.cat_features_indices,
+                task_type=self.catboost_task_type,
                 train_dir=self._catboost_train_dir
             )
         else:
@@ -161,6 +167,7 @@ class CatBoostModel:
                 random_seed=self.random_state,
                 verbose=0,
                 cat_features=self.cat_features_indices,
+                task_type=self.catboost_task_type,
                 train_dir=self._catboost_train_dir
             )
 
@@ -170,7 +177,7 @@ class CatBoostModel:
                 self.data['X_train'],
                 self.data['y_train'],
                 eval_set=(self.data['X_val'], self.data['y_val']),
-                early_stopping_rounds=50,
+                early_stopping_rounds=20,
                 verbose=False
             )
 
@@ -270,6 +277,7 @@ class CatBoostModel:
                 verbose=0,
                 auto_class_weights='Balanced',
                 cat_features=self.cat_features_indices,
+                task_type=self.catboost_task_type,
                 train_dir=self._catboost_train_dir
             )
         else:
@@ -282,6 +290,7 @@ class CatBoostModel:
                 random_seed=self.random_state,
                 verbose=0,
                 cat_features=self.cat_features_indices,
+                task_type=self.catboost_task_type,
                 train_dir=self._catboost_train_dir
             )
 
@@ -291,7 +300,7 @@ class CatBoostModel:
                 self.data['X_train'],
                 self.data['y_train'],
                 eval_set=(self.data['X_val'], self.data['y_val']),
-                early_stopping_rounds=50,
+                early_stopping_rounds=20,
                 verbose=False
             )
         else:
@@ -337,8 +346,10 @@ class CatBoostModel:
             'best_params': self.best_params if self.hpo_trials > 0 else {
                 'iterations': iterations,
                 'depth': depth,
-                'learning_rate': learning_rate
-            }
+                'learning_rate': learning_rate,
+                'task_type': self.catboost_task_type,
+            },
+            'trained_model': self.model,
         }
 
         # Add validation predictions if available

@@ -1,9 +1,9 @@
 # Readiness to Train - Project Documentation
 
-**Generated:** 2026-02-26
+**Generated:** 2026-02-26  **Last Updated:** 2026-03-25
 **Project:** Causal Modelling of Player Readiness to Train
 **Partnership:** KU Leuven & OH Leuven
-**Purpose:** Prescriptive analytics for optimal training intensity using Causal Machine Learning (Dynamic Treatment Regimes)
+**Purpose:** Causal analytics for daily training load decisions using longitudinal observational panel data
 
 ---
 
@@ -40,9 +40,12 @@ Standard predictive modelling asks *"given the data, what will happen?"*. This p
 
 ### Key Research Questions
 
-1. How can we accurately estimate the effect of training intensity sequences in a "Small N, Large T" environment (28 players, 597 days)?
-2. How do we handle **time-varying confounding affected by prior treatment** in observational football data?
-3. Can a causal DTR model identify the optimal individualised training sequence that maximises match-day performance?
+1. **Treatment policy modelling**: What morning-state features predict the training intensity assigned by the coaching staff? (models the propensity $\pi(A_t \mid L_t)$ — foundation for IPTW)
+2. **Short-term load response**: Does today's training intensity causally predict next-day status deterioration? (G-computation / IPTW outcome model)
+3. **Handling time-varying confounding**: How do we correctly estimate causal effects in the presence of time-varying confounding affected by prior treatment?
+4. **Sequential optimisation**: What sequence of training intensities over a match cycle maximises within-player performance? (DTR / Q-learning / dWOLS)
+
+> **Note on match-day performance as outcome:** Directly optimising match-day performance (e.g., Match Intensity Yesterday) as the downstream causal target proves intractable in practice. Too many unobserved confounders — tactical decisions, opponent quality, team composition, psychological factors — sit between the training process and the match result, making the causal chain from daily load to match outcome largely unidentifiable from available data. Research therefore focuses on identifiable short-to-medium-term outcomes (training intensity assignment, next-day status transitions) before attempting longer-horizon questions.
 
 ### Causal Framework Variables
 
@@ -59,11 +62,17 @@ The data loader supports flexible variable selection:
 
 ### Target Variables
 
-For **standard ML experiments** (prediction):
-- **Status Decrease** (binary): Player's medical status worsened (Available→Attention, Available→Injured, or Attention→Injured). `1` = worsened, `0` = stable/improved.
+| Experiment | Target | Type | Use |
+|---|---|---|---|
+| **Exp 2 — Treatment Policy** | `Training Intensity Yesterday` (horizon=1) | Regression [0,1) | Propensity model; coaching policy description |
+| **Exp 3 — Load Response** | `Status Decrease` (horizon=1) | Binary classification | Short-term outcome model; G-computation input |
+| **Future DTR** | `Match Intensity Yesterday` | Regression [0,∞) | Long-horizon causal outcome (identifiability limited) |
 
-For **causal DTR experiments** (optimisation):
-- **Match Intensity Yesterday** (continuous): The causal outcome Y. Computed as `sqrt(Match HID Per BIP Yesterday × Match HIE Per BIP Yesterday) × sqrt(clip(minutes_played, 15, 90) / 90)`. Playing time is clamped to [15, 90] min: the 15-min floor prevents very brief cameo appearances from being penalised too harshly; the 90-min ceiling gives full credit (weight = 1) to any player who played a full match. The square-root scale further softens the penalty for partial appearances. Range ≈ [0, ∞), only filled on the day after a match.
+**Status Decrease** (binary): Player's medical status worsened (Available→Attention, Available→Injured, or Attention→Injured). `1` = worsened, `0` = stable/improved. Prevalence ≈ 3–5%.
+
+**Training Intensity Yesterday** (regression target in Exp 2): Composite score = `tanh(mean(TD%, HSD%, Dec%, Sprints%) / 100)`, soft-capped in `[0, 1)`. With `target_horizon=1`, this represents today's intensity assigned after the morning assessment.
+
+**Match Intensity Yesterday** (reference only): `sqrt(Match HID Per BIP Yesterday × Match HIE Per BIP Yesterday) × sqrt(clip(minutes_played, 15, 90) / 90)`. Range ≈ [0, ∞), only filled on the day after a match. Retained in the dataset as a feature and for exploratory analysis, but too many unobserved confounders make it an unreliable primary causal target.
 
 ---
 
@@ -135,7 +144,7 @@ Readiness-To-Train/
 │   │   ├── Raw Data Dictionary.pdf   # Auto-generated raw data documentation
 │   │   └── NDA.pdf                   # Non-disclosure agreement
 │   └── processed/                    # Preprocessed data (auto-generated)
-│       ├── RTT.xlsx                  # Multi-dataset merged & feature-engineered (14,359 rows × 45 cols)
+│       ├── RTT.xlsx                  # Multi-dataset merged & feature-engineered (14,359 rows × 46 cols)
 │       └── RTT Data Dictionary.pdf   # Auto-generated variable documentation
 │
 ├── images/                           # Generated visualizations
@@ -158,10 +167,15 @@ Readiness-To-Train/
 │   ├── 1.1. Raw Data Visualisation.ipynb      # EDA across all 4 raw datasets
 │   └── 1.2. Processed Data Visualisation.ipynb # EDA of processed RTT.xlsx
 │
-│   # 2.x, 3.x, ... — Experiments (one number per experiment, e.g. 2.1, 2.2)
+│   # 2.x — Experiments (one number per experiment)
+│   ├── 2.1. Experiment1.ipynb             # Exp 1: Match Intensity prediction (reference/exploratory)
+│   ├── 2.2. Experiment2.ipynb             # Exp 2: Treatment policy modelling (Training Intensity)
+│   └── 2.3. Experiment3.ipynb             # Exp 3: Short-term load response (Status Decrease)
 │
 ├── scripts/
-│   ├── Experiment1.py               # Experiment 1: predict Match Intensity (single-model runner)
+│   ├── Experiment1.py               # Exp 1: predict Match Intensity (reference/exploratory only)
+│   ├── Experiment2.py               # Exp 2: treatment policy modelling (Training Intensity prediction)
+│   ├── Experiment3.py               # Exp 3: short-term load response (Status Decrease prediction)
 │   └── generate_visualizations.py   # Batch DAG generation for all 28 players
 │
 ├── src/
@@ -318,7 +332,7 @@ The preprocessing pipeline merges all raw datasets into a single analysis-ready 
 18. Column reordering into temporal groups
 19. Save RTT.xlsx + auto-generate PDF data dictionary
 
-**Processed Dataset Columns (45 columns, in order):**
+**Processed Dataset Columns (46 columns, in order):**
 
 | Group | Columns | Temporal Position | Source |
 |-------|---------|-------------------|--------|
@@ -435,7 +449,7 @@ LinearRegressionModel(
     target_variable='Match Intensity Yesterday',
     predictory_columns=[...],
     lag=3,
-    hpo_trials=50,                 # Optuna trials for alpha (1e-4 → 1e3, log scale)
+    hpo_trials=20,                 # Optuna trials for alpha (1e-4 → 1e3, log scale)
     alpha=1.0,                     # Used when hpo_trials=0
     categorical_encoding='one-hot', # Recommended for linear models
     standardize=True               # Required — Ridge is scale-sensitive
@@ -452,7 +466,7 @@ LogisticRegressionModel(
     target_variable='Status Decrease',
     predictory_columns=[...],
     lag=3,
-    hpo_trials=50,                # Optuna hyperparameter optimization
+    hpo_trials=20,                # Optuna hyperparameter optimization
     class_weight='balanced',      # Auto-balance for imbalanced data
     categorical_encoding='one-hot',
     standardize=True              # Required for linear models
@@ -488,8 +502,8 @@ CatBoostModel(
     target_variable='Status Decrease',
     predictory_columns=[...],
     lag=3,
-    hpo_trials=50,                # Optuna hyperparameter optimization
-    iterations=500,
+    hpo_trials=20,                # Optuna hyperparameter optimization
+    iterations=200,
     depth=6,
     learning_rate=0.1,
     categorical_encoding='label', # CatBoost handles categoricals natively
@@ -715,6 +729,9 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 | `0. TI_Missingness_Analysis.ipynb` | Missingness analysis for Training Intensity Yesterday; investigates free-day fill logic and NaN patterns. |
 | `1.1. Raw Data Visualisation.ipynb` | Comprehensive EDA across all 4 raw datasets: missingness, dataset linkage (Venn diagrams), temporal coverage, wellness/GPS distributions, player profiles (radar charts), cross-dataset correlations. |
 | `1.2. Processed Data Visualisation.ipynb` | EDA of processed RTT.xlsx: variable distributions, temporal patterns, per-player profiles, correlation heatmaps. |
+| `2.1. Experiment1.ipynb` | **Reference only.** Predicts Match Intensity (largely unidentifiable causal target). Retained for documentation purposes. |
+| `2.2. Experiment2.ipynb` | **Treatment policy modelling.** Predicts today's Training Intensity from morning covariates. Runs lin_reg, XGBoost, CatBoost, TabPFN; compares RMSE/R²; lag ablation; feature importances. Propensity model foundation. |
+| `2.3. Experiment3.ipynb` | **Short-term load response.** Predicts next-day Status Decrease (binary). Two modes: prediction-only and causal_framing. ROC/PR curves, feature importances, logistic coefficients, per-player AUC. |
 
 ### Running from Command Line
 
@@ -729,7 +746,9 @@ python src/models/tabpfn.py                   # Run TabPFN
 python src/methods/dag_creator.py             # Run DAG demos + generate visualizations
 python src/utils/generate_project_overview.py # Regenerate Project Overview.pdf
 python src/utils/generate_raw_data_dict.py    # Regenerate data/raw/Raw Data Dictionary.pdf
-python scripts/Experiment1.py                 # Run Experiment 1 demo (XGBoost, lag=3)
+python scripts/Experiment1.py                 # Exp 1 demo — Match Intensity (reference only)
+python scripts/Experiment2.py                 # Exp 2 demo — Training Intensity prediction (XGBoost, lag=3)
+python scripts/Experiment3.py                 # Exp 3 demo — Status Decrease prediction (both modes)
 python scripts/generate_visualizations.py     # Generate DAGs for all 28 players
 ```
 
@@ -810,40 +829,66 @@ model.train() -> Dict  # Returns predictions, metrics, model weights
 
 ### Experiment 1 Runner (`scripts/Experiment1.py`)
 
-Predicts **Match Intensity Yesterday** at t+1 (next match) from morning covariates at t.
-Single-model interface — call once per model type and compare results in a notebook.
+> **Status:** Reference / exploratory only. Predicts Match Intensity Yesterday — a causal target that is largely unidentifiable from available data due to unobserved confounders between training load and match performance. Retained for reference; primary experiments are Exp 2 and Exp 3.
+
+Regression runner for `'lin_reg'`, `'xgboost'`, `'catboost'`, `'tabpfn'`. Returns `metrics` dict with mse, rmse, mae, r2, pearson_r/p, null_rmse, train_rmse, n_test, n_train.
+
+### Experiment 2 Runner (`scripts/Experiment2.py`)
+
+**Treatment Policy Modelling** — predict today's Training Intensity from morning covariates.
 
 ```python
-from scripts.Experiment1 import run_experiment
+from scripts.Experiment2 import run_experiment, DEFAULT_COVARIATES
 
 results = run_experiment(
-    covariates=['Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
-                'Training Intensity Yesterday', 'Days Until Match', ...],
-    lag=3,            # lag=1: only row t; lag=3: rows t, t-1, t-2 (per-player)
-    model_type='xgboost',   # one of 'lin_reg', 'xgboost', 'catboost', 'tabpfn'
-    hpo_trials=20,    # override any model default via **model_kwargs
+    covariates=DEFAULT_COVARIATES,   # or custom list
+    lag=3,
+    model_type='xgboost',   # 'lin_reg', 'xgboost', 'catboost', 'tabpfn'
 )
 ```
 
-**Parameters:** `covariates`, `lag` (≥ 1), `model_type`, `test_size`, `val_size`, `random_state`, `verbose`, `**model_kwargs`.
+**Returns:** Same structure as Exp 1 (regression metrics). High R² → coaching policy is systematic; low R² → unmeasured factors dominate. Either way, the fitted model is a valid propensity model for IPTW.
+
+### Experiment 3 Runner (`scripts/Experiment3.py`)
+
+**Short-term Load Response** — predict next-day Status Decrease (binary).
+
+```python
+from scripts.Experiment3 import run_experiment, DEFAULT_COVARIATES
+
+# Pure prediction
+results = run_experiment(
+    covariates=DEFAULT_COVARIATES, lag=3, model_type='xgboost',
+    mode='prediction',
+)
+
+# Causal framing: adds Training Intensity as treatment (diagnostic, NOT valid causal estimate)
+results = run_experiment(
+    covariates=DEFAULT_COVARIATES, lag=3, model_type='log_reg',
+    mode='causal_framing',
+)
+```
+
+**Parameters:** `covariates`, `lag` (≥ 1), `model_type` (`'log_reg'`, `'xgboost'`, `'catboost'`, `'tabpfn'`), `mode` (`'prediction'` or `'causal_framing'`), `test_size`, `val_size`, `random_state`, `verbose`, `**model_kwargs`.
 
 **Returns:**
 ```python
 {
-    'config':        dict,   # all run parameters
+    'config':        dict,
     'y_train_true':  ndarray,
-    'y_train_pred':  ndarray,
-    'y_val_true':    ndarray,  # only if val set non-empty
-    'y_val_pred':    ndarray,
+    'y_train_pred':  ndarray,   # probabilities
     'y_test_true':   ndarray,
-    'y_test_pred':   ndarray,
-    'meta_test':     pd.DataFrame,  # Date + Player ID for test rows
-    'metrics':       dict,   # mse, rmse, mae, r2, pearson_r/p, null_rmse, train_rmse, n_test, n_train
-    'per_player':    dict,   # Player ID → {n, rmse, r2}
-    'model_weights': dict,   # coefficients/importances + feature_names
+    'y_test_pred':   ndarray,   # probabilities
+    'meta_test':     pd.DataFrame,
+    'metrics':       dict,   # roc_auc, avg_precision, f1, precision, recall,
+                             # accuracy, prevalence, null_accuracy, threshold,
+                             # n_test, n_train, n_positive_test
+    'per_player':    dict,   # Player ID → {n, n_positive, roc_auc, f1}
+    'model_weights': dict,
     'feature_names': list,
     'best_params':   dict,
-    'task_type':     str,    # 'regression'
+    'task_type':     str,    # 'classification'
+    'threshold':     float,
 }
 ```
 
@@ -889,14 +934,13 @@ Status decreases are rare (~3-5% of observations). Both models handle this:
 
 ### 4. Treatment Variable Configuration
 
-| Scenario | treatment_columns | treatment_horizon | target_horizon | Research question |
-|----------|------------------|-------------------|----------------|-------------------|
-| Standard ML | *not set* | - | 0 | Yesterday's load → today's status |
-| Future prediction | *not set* | - | 1 | Today's data → tomorrow's status |
-| Session type | `['Activity Type Today']` | 0 | 1 | Effect of session type on tomorrow |
-| Training intensity | `['Training Intensity Yesterday']` | 1 | 1 | Effect of today's intensity on tomorrow |
-| Full prescription | `['Activity Type Today', 'Training Intensity Yesterday']` | `{...: 0, ...: 1}` | 1 | Effect of full prescription on tomorrow |
-| Yesterday's intensity | `['Training Intensity Yesterday']` | 0 | 0 | Effect of yesterday's intensity on today |
+| Scenario | target | treatment_columns | treatment_horizon | target_horizon | Experiment |
+|----------|--------|------------------|-------------------|----------------|------------|
+| Propensity model (Exp 2) | `Training Intensity Yesterday` | *not set* | - | 1 | Exp 2 |
+| Load response — prediction (Exp 3) | `Status Decrease` | *not set* | - | 1 | Exp 3 |
+| Load response — causal framing (Exp 3) | `Status Decrease` | `['Training Intensity Yesterday']` | 1 | 1 | Exp 3 |
+| Session-type effect | `Status Decrease` | `['Activity Type Today']` | 0 | 1 | Custom |
+| Full DTR prescription | `Status Decrease` | `['Activity Type Today', 'Training Intensity Yesterday']` | `{...: 0, ...: 1}` | 1 | Custom |
 
 ### 5. Covariate Shift and Confounding
 
@@ -948,6 +992,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-03-11
+**Last Updated:** 2026-03-25
 **Python Version:** 3.8+
-**Key Dependencies:** pandas, numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2
+**Key Dependencies:** torch (CUDA build), pandas, numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, shap, tqdm, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2

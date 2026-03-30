@@ -27,6 +27,7 @@ Usage:
     results = model.train()
 """
 
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -91,6 +92,11 @@ class TabPFNModel:
     n_estimators : int, default=4
         Number of ensembled forward passes (TabPFN v2 parameter).
         Higher values improve stability at the cost of inference time.
+    ignore_pretraining_limits : bool, default=False
+        If True, bypasses TabPFN v2's built-in sample-size validation that
+        raises RuntimeError when running on CPU with more than 1000 rows.
+        Set to True when using CPU with large datasets (e.g. RTT.xlsx ~14k rows).
+        Has no effect when running on GPU.
     random_state : int, default=42
         Random seed for reproducibility.
     """
@@ -110,6 +116,7 @@ class TabPFNModel:
         standardize: bool = False,
         device: str = 'auto',
         n_estimators: int = 4,
+        ignore_pretraining_limits: bool = False,
         random_state: int = 42
     ):
         if not TABPFN_AVAILABLE:
@@ -128,7 +135,14 @@ class TabPFNModel:
         self.standardize = standardize
         self.device = device
         self.n_estimators = n_estimators
+        self.ignore_pretraining_limits = ignore_pretraining_limits
         self.random_state = random_state
+
+        # Belt-and-suspenders: some TabPFN builds don't honour the
+        # ignore_pretraining_limits constructor flag at validation time.
+        # Setting the environment variable is the most reliable bypass.
+        if ignore_pretraining_limits:
+            os.environ['TABPFN_ALLOW_CPU_LARGE_DATASET'] = '1'
 
         self.data_loader = ReadinessDataLoader()
         self.model = None
@@ -198,11 +212,13 @@ class TabPFNModel:
             self.model = TabPFNClassifier(
                 device=self.device,
                 n_estimators=self.n_estimators,
+                ignore_pretraining_limits=self.ignore_pretraining_limits,
             )
         else:
             self.model = TabPFNRegressor(
                 device=self.device,
                 n_estimators=self.n_estimators,
+                ignore_pretraining_limits=self.ignore_pretraining_limits,
             )
 
         # TabPFN fit: stores training data (no iterative learning)
@@ -241,6 +257,7 @@ class TabPFNModel:
             'best_params': {
                 'device': self.device,
                 'n_estimators': self.n_estimators,
+                'ignore_pretraining_limits': self.ignore_pretraining_limits,
             }
         }
 

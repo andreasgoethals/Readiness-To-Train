@@ -54,6 +54,7 @@ class XGBoostModel:
         reg_lambda: float = 1.0,
         scale_pos_weight: Optional[float] = None,
         early_stopping_rounds: int = 10,
+        device: str = 'cpu',
         random_state: int = 42
     ):
         self.target_variable = target_variable
@@ -78,6 +79,7 @@ class XGBoostModel:
         self.reg_lambda = reg_lambda
         self.scale_pos_weight = scale_pos_weight
         self.early_stopping_rounds = early_stopping_rounds
+        self.device = device
         self.random_state = random_state
 
         self.data_loader = ReadinessDataLoader()
@@ -148,6 +150,8 @@ class XGBoostModel:
                 self.scale_pos_weight = n_neg / n_pos
 
         # Create XGBoost parameters
+        # device='cuda' enables GPU acceleration (XGBoost >= 2.0).
+        # n_jobs is only meaningful on CPU; skip it for GPU to avoid conflicts.
         params = {
             'max_depth': self.max_depth,
             'learning_rate': self.learning_rate,
@@ -158,8 +162,10 @@ class XGBoostModel:
             'reg_alpha': self.reg_alpha,
             'reg_lambda': self.reg_lambda,
             'random_state': self.random_state,
-            'n_jobs': -1
+            'device': self.device,
         }
+        if self.device == 'cpu':
+            params['n_jobs'] = -1
 
         # Add task-specific parameters
         if self.task_type == 'classification':
@@ -226,8 +232,10 @@ class XGBoostModel:
                 'max_depth': self.max_depth,
                 'learning_rate': self.learning_rate,
                 'subsample': self.subsample,
-                'colsample_bytree': self.colsample_bytree
-            }
+                'colsample_bytree': self.colsample_bytree,
+                'device': self.device,
+            },
+            'trained_model': self.model,
         }
 
         # Add validation predictions if available

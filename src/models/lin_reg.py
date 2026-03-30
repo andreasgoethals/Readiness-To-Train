@@ -252,6 +252,7 @@ class LinearRegressionModel:
             'model_weights': model_weights,
             'task_type':    self.task_type,
             'best_params':  self.best_params,
+            'trained_model': self.model,
         }
         if y_val_pred is not None:
             results['y_val_true'] = self.data['y_val'].values

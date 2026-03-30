@@ -18,8 +18,16 @@ results/
 # Generated DAG visualizations (re-generated via scripts/Generate_Visualizations.py)
 images/
 
-# CatBoost training logs
+# CatBoost training logs (also redirected to /tmp dirs in code)
 catboost_info/
+catboost_*/
+
+# TabPFN model cache
+tabpfn_cache/
+.tabpfn/
+
+# Temporary directories created by models
+/tmp/
 
 # -----------------------------------------------------------
 # Python
