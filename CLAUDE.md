@@ -1,6 +1,6 @@
 # Readiness to Train - Project Documentation
 
-**Generated:** 2026-02-26  **Last Updated:** 2026-03-25
+**Generated:** 2026-02-26  **Last Updated:** 2026-03-31
 **Project:** Causal Modelling of Player Readiness to Train
 **Partnership:** KU Leuven & OH Leuven
 **Purpose:** Causal analytics for daily training load decisions using longitudinal observational panel data
@@ -128,7 +128,8 @@ For **lagged features**, the data loader creates player-grouped shifted values (
 ```
 Readiness-To-Train/
 │
-├── Project Overview.pdf              # Research overview document (root)
+├── Project Overview.pdf              # Problem statement & research design (root)
+├── Project Results.pdf               # Experimental findings & conclusions (root)
 ├── CLAUDE.md                         # This documentation file
 ├── README.md                         # Repository readme
 ├── LICENSE                           # License file
@@ -159,7 +160,7 @@ Readiness-To-Train/
 ├── notebooks/
 │   │
 │   │   # 0.x — Debugging / temporary quality checks
-│   ├── 0. Outlier_Detection.ipynb         # GPS% and ACWR extreme-outlier audit
+│   ├── 0. Match Analysis.ipynb            # Match-level data exploration and analysis
 │   ├── 0. Processed_Data_Quality.ipynb    # Automated quality checks on RTT.xlsx
 │   ├── 0. TI_Missingness_Analysis.ipynb   # Training Intensity Yesterday missingness
 │   │
@@ -176,7 +177,8 @@ Readiness-To-Train/
 │   ├── Experiment1.py               # Exp 1: predict Match Intensity (reference/exploratory only)
 │   ├── Experiment2.py               # Exp 2: treatment policy modelling (Training Intensity prediction)
 │   ├── Experiment3.py               # Exp 3: short-term load response (Status Decrease prediction)
-│   └── generate_visualizations.py   # Batch DAG generation for all 28 players
+│   ├── generate_visualizations.py   # Batch DAG generation for all 28 players
+│   └── generate_project_results.py  # Generate Project Results.pdf
 │
 ├── src/
 │   ├── data/
@@ -724,7 +726,7 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 
 | Notebook | Purpose |
 |----------|---------|
-| `0. Outlier_Detection.ipynb` | GPS benchmark % and ACWR extreme-outlier audit. Tukey 3×IQR + per-player z-score detection. Saves `data/processed/outlier_flagged_rows.xlsx`. |
+| `0. Match Analysis.ipynb` | Match-level data exploration: match intensity distributions, per-player profiles, playing time patterns, match performance metrics. |
 | `0. Processed_Data_Quality.ipynb` | Automated quality checks on RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flags, encoding validation. |
 | `0. TI_Missingness_Analysis.ipynb` | Missingness analysis for Training Intensity Yesterday; investigates free-day fill logic and NaN patterns. |
 | `1.1. Raw Data Visualisation.ipynb` | Comprehensive EDA across all 4 raw datasets: missingness, dataset linkage (Venn diagrams), temporal coverage, wellness/GPS distributions, player profiles (radar charts), cross-dataset correlations. |
@@ -750,6 +752,7 @@ python scripts/Experiment1.py                 # Exp 1 demo — Match Intensity (
 python scripts/Experiment2.py                 # Exp 2 demo — Training Intensity prediction (XGBoost, lag=3)
 python scripts/Experiment3.py                 # Exp 3 demo — Status Decrease prediction (both modes)
 python scripts/generate_visualizations.py     # Generate DAGs for all 28 players
+python scripts/generate_project_results.py   # Generate Project Results.pdf
 ```
 
 ---
@@ -992,6 +995,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-03-25
+**Last Updated:** 2026-03-31
 **Python Version:** 3.8+
 **Key Dependencies:** torch (CUDA build), pandas, numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, shap, tqdm, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2

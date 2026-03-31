@@ -253,6 +253,7 @@ class TabPFNModel:
             'y_test_true': self.data['y_test'].values,
             'y_test_pred': y_test_pred,
             'model_weights': model_weights,
+            'trained_model': self.model,
             'task_type': self.task_type,
             'best_params': {
                 'device': self.device,
