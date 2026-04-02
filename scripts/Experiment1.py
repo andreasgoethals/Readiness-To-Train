@@ -282,8 +282,8 @@ def run_experiment(
         raise ValueError(
             f"model_type must be one of {sorted(VALID_MODELS)}, got '{model_type}'"
         )
-    if lag < 1:
-        raise ValueError(f"lag must be >= 1, got {lag}")
+    if lag < 0:
+        raise ValueError(f"lag must be >= 0, got {lag}")
     if not covariates:
         raise ValueError("covariates list must not be empty")
 

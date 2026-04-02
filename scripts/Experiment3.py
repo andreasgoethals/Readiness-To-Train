@@ -136,21 +136,20 @@ MODEL_DEFAULTS = {
 
 # Morning-assessment covariates only (available BEFORE the session).
 DEFAULT_COVARIATES = [
-    # Physical wellness
-    'Fatigue (z)', 'Readiness (z)', 'Soreness (z)', 'Physical State',
-    # Mental wellness
-    'Sleep Quality (z)', 'Stress (z)', 'Mood (z)', 'Mental State',
-    'Overall Wellbeing',
-    # Workload history
+    'Physical State',
+    'Mental State',
     'Total Distance (ACWR) Yesterday',
     'High Speed Distance (ACWR) Yesterday',
     'Any ACWR Danger',
+    'Total Distance % Yesterday',
+    'High Speed Distance % Yesterday',
     'Training Intensity Yesterday',
-    # Temporal context
-    'Days Since Game', 'Days Until Match',
-    # Availability
-    'Club Attendance Last 14 Days',
-    # Profile
+    'Perceived Exertion Yesterday',
+    'Total Minutes Yesterday',
+    'Avg Heart Rate Yesterday',
+    'Heart Rate Exertion Yesterday',
+    'Days Since Game',
+    'Days Until Match',
     'Position',
 ]
 
@@ -366,8 +365,8 @@ def run_experiment(
         raise ValueError(
             f"mode must be one of {sorted(VALID_MODES)}, got {mode!r}"
         )
-    if lag < 1:
-        raise ValueError(f"lag must be >= 1, got {lag}")
+    if lag < 0:
+        raise ValueError(f"lag must be >= 0, got {lag}")
     if not covariates:
         raise ValueError("covariates list must not be empty")
 

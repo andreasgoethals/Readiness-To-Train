@@ -160,13 +160,13 @@ Readiness-To-Train/
 ├── notebooks/
 │   │
 │   │   # 0.x — Debugging / temporary quality checks
-│   ├── 0. Match Analysis.ipynb            # Match-level data exploration and analysis
+│   ├── 1.1. Match Analysis.ipynb           # Match-level data exploration and analysis
 │   ├── 0. Processed_Data_Quality.ipynb    # Automated quality checks on RTT.xlsx
 │   ├── 0. TI_Missingness_Analysis.ipynb   # Training Intensity Yesterday missingness
 │   │
 │   │   # 1.x — Data visualisation (EDA)
-│   ├── 1.1. Raw Data Visualisation.ipynb      # EDA across all 4 raw datasets
-│   └── 1.2. Processed Data Visualisation.ipynb # EDA of processed RTT.xlsx
+│   ├── 1.2. Raw Data Visualisation.ipynb      # EDA across all 4 raw datasets
+│   └── 1.3. Processed Data Visualisation.ipynb # EDA of processed RTT.xlsx
 │
 │   # 2.x — Experiments (one number per experiment)
 │   ├── 2.1. Experiment1.ipynb             # Exp 1: Match Intensity prediction (reference/exploratory)
@@ -726,11 +726,11 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 
 | Notebook | Purpose |
 |----------|---------|
-| `0. Match Analysis.ipynb` | Match-level data exploration: match intensity distributions, per-player profiles, playing time patterns, match performance metrics. |
+| `1.1. Match Analysis.ipynb` | Match-level data exploration: match intensity distributions, per-player profiles, playing time patterns, match performance metrics. |
 | `0. Processed_Data_Quality.ipynb` | Automated quality checks on RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flags, encoding validation. |
 | `0. TI_Missingness_Analysis.ipynb` | Missingness analysis for Training Intensity Yesterday; investigates free-day fill logic and NaN patterns. |
-| `1.1. Raw Data Visualisation.ipynb` | Comprehensive EDA across all 4 raw datasets: missingness, dataset linkage (Venn diagrams), temporal coverage, wellness/GPS distributions, player profiles (radar charts), cross-dataset correlations. |
-| `1.2. Processed Data Visualisation.ipynb` | EDA of processed RTT.xlsx: variable distributions, temporal patterns, per-player profiles, correlation heatmaps. |
+| `1.2. Raw Data Visualisation.ipynb` | Comprehensive EDA across all 4 raw datasets: missingness, dataset linkage (Venn diagrams), temporal coverage, wellness/GPS distributions, player profiles (radar charts), cross-dataset correlations. |
+| `1.3. Processed Data Visualisation.ipynb` | EDA of processed RTT.xlsx: variable distributions, temporal patterns, per-player profiles, correlation heatmaps. |
 | `2.1. Experiment1.ipynb` | **Reference only.** Predicts Match Intensity (largely unidentifiable causal target). Retained for documentation purposes. |
 | `2.2. Experiment2.ipynb` | **Treatment policy modelling.** Predicts today's Training Intensity from morning covariates. Runs lin_reg, XGBoost, CatBoost, TabPFN; compares RMSE/R²; lag ablation; feature importances. Propensity model foundation. |
 | `2.3. Experiment3.ipynb` | **Short-term load response.** Predicts next-day Status Decrease (binary). Two modes: prediction-only and causal_framing. ROC/PR curves, feature importances, logistic coefficients, per-player AUC. |

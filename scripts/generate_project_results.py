@@ -17,7 +17,7 @@ from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    HRFlowable, KeepTogether, PageBreak
+    HRFlowable, KeepTogether, PageBreak, Image
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
 
@@ -148,6 +148,22 @@ def _styles():
         spaceAfter=6,
         alignment=TA_JUSTIFY,
     )
+    styles['conclusion_head'] = ParagraphStyle(
+        'conclusion_head',
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        textColor=NAVY,
+        spaceBefore=2,
+        spaceAfter=4,
+    )
+    styles['conclusion_body'] = ParagraphStyle(
+        'conclusion_body',
+        fontName='Helvetica',
+        fontSize=9.5,
+        textColor=GREY,
+        leading=14,
+        alignment=TA_JUSTIFY,
+    )
     styles['th'] = ParagraphStyle(
         'th',
         fontName='Helvetica-Bold',
@@ -243,6 +259,25 @@ def _finding(story, text, styles):
     story.append(Paragraph(text, styles['finding']))
 
 
+def _conclusion_box(story, title, text, styles):
+    """Light blue box with dark blue header for conclusions."""
+    BOX_BG = colors.HexColor('#E8F0FE')
+    BOX_BORDER = colors.HexColor('#1B3A6B')
+    data = [[Paragraph(title, styles['conclusion_head']),],
+            [Paragraph(text, styles['conclusion_body']),]]
+    t = Table(data, colWidths=[CONTENT_W - 12])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), BOX_BG),
+        ('BOX', (0, 0), (-1, -1), 1.0, BOX_BORDER),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+
+
 def _page_number(canvas, doc):
     """Draw page number at bottom centre of each page."""
     canvas.saveState()
@@ -256,8 +291,10 @@ def _page_number(canvas, doc):
 # PDF content  (storytelling structure for OH Leuven delivery)
 # ---------------------------------------------------------------------------
 def build_pdf(output_path: Path):
+    from datetime import datetime
     S = _styles()
     story = []
+    gen_date = datetime.now().strftime('%B %Y')  # e.g. "March 2026"
 
     # ── Title page ───────────────────────────────────────────────────────
     story.append(Spacer(1, 1.8 * cm))
@@ -265,7 +302,7 @@ def build_pdf(output_path: Path):
     story.append(Paragraph('Project Results', S['subtitle']))
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph('KU Leuven &amp; OH Leuven', S['meta']))
-    story.append(Paragraph('March 2026', S['meta']))
+    story.append(Paragraph(gen_date, S['meta']))
     story.append(Spacer(1, 0.8 * cm))
     _hr(story)
     story.append(Spacer(1, 0.4 * cm))
@@ -276,12 +313,22 @@ def build_pdf(output_path: Path):
     _section(story, '1. Introduction', S)
 
     story.append(Paragraph(
-        'This report summarises the results of the <b>Readiness to Train</b> '
-        'project: a collaboration between KU Leuven and OH Leuven to build '
-        'a data-driven system that helps coaching staff optimise daily '
-        'training intensity for each player. The goal is to answer the '
-        'question: <i>"Given everything we know about a player this morning, '
-        'what training intensity should we prescribe today?"</i>',
+        'The goal of this project is to develop a <b>causal framework for '
+        'optimising training load per player</b> in professional football, '
+        'such that each player arrives at match day in the best possible '
+        'physical condition. The central question is: <i>"Given everything '
+        'we know about a player this morning, what training intensity '
+        'should we prescribe today to maximise their match-day performance '
+        'while respecting their biological constraints?"</i>',
+        S['body']))
+
+    story.append(Paragraph(
+        'This is fundamentally a <b>causal</b> question: coaches already '
+        'make training decisions based on player state, which means the '
+        'observed data confounds the effect of training with the selection '
+        'of who receives it. Standard predictive modelling cannot '
+        'disentangle these; causal methods (G-computation, IPTW, DTR '
+        'optimisation) are required.',
         S['body']))
 
     story.append(Paragraph(
@@ -289,14 +336,14 @@ def build_pdf(output_path: Path):
         'over approximately 20 months (July 2024 &#8211; February 2026), '
         'covering <b>28 first-team players</b> and totalling '
         '<b>14,359 player-day observations</b>. Four raw datasets were '
-        'merged into a single analysis-ready file containing 46 engineered '
-        'features per player-day.',
+        'merged into a single analysis-ready file (RTT.xlsx) containing '
+        '46 engineered features per player-day.',
         S['body']))
 
     story.append(Paragraph(
-        'Three experiments were conducted, each answering a different '
-        'question. Before describing the experiments, we explain the key '
-        'variables that were constructed during preprocessing.',
+        'Three experiments were conducted, each building on the previous. '
+        'This report describes the data, the analysis process, the key '
+        'engineered variables, and the results of all three experiments.',
         S['body']))
 
     # ==================================================================
@@ -323,36 +370,61 @@ def build_pdf(output_path: Path):
     story.append(Paragraph('<b>Data analysis and exploration</b>', S['h2']))
 
     story.append(Paragraph(
-        'Before any modelling, we conducted thorough exploratory data analysis '
-        'across several notebooks:',
+        'Before any modelling, we conducted thorough data analysis across '
+        'three levels of Jupyter notebooks. All visualisations are preserved '
+        'inside the notebooks and can be re-examined interactively.',
         S['body']))
 
     story.append(Paragraph(
-        '&#8226; <b>Raw Data Visualisation</b> &#8212; examined all four '
-        'datasets individually: variable distributions, missingness patterns, '
-        'player overlap across datasets (Venn diagrams), temporal coverage, '
-        'per-player radar charts for wellness and GPS profiles, and '
-        'cross-dataset correlations.',
+        '<b>Level 0 &#8212; Data Quality Checks:</b>',
+        S['body']))
+    story.append(Paragraph(
+        '&#8226; <b>0. Processed_Data_Quality</b> &#8212; automated validation '
+        'of the processed RTT.xlsx dataset: player coverage, column completeness, '
+        'temporal integrity, ACWR flag verification, and encoding checks.',
+        S['bullet']))
+    story.append(Paragraph(
+        '&#8226; <b>0. TI_Missingness_Analysis</b> &#8212; investigation of '
+        'why Training Intensity Yesterday has missing values for certain rows: '
+        'free-day fill logic validation, NaN patterns by activity type.',
         S['bullet']))
 
     story.append(Paragraph(
-        '&#8226; <b>Processed Data Visualisation</b> &#8212; explored the '
-        'merged RTT.xlsx dataset: feature distributions across the full season, '
-        'per-player wellness trajectories, ACWR time series, and feature '
-        'correlation heatmaps to identify redundancy and multicollinearity.',
+        '<b>Level 1 &#8212; Data Visualisation &amp; EDA:</b>',
+        S['body']))
+    story.append(Paragraph(
+        '&#8226; <b>1.1. Match Analysis</b> &#8212; match-level data exploration '
+        'from Games.xlsx: match intensity distributions, per-player performance '
+        'profiles, playing time patterns, and relationships between match load '
+        'and subsequent wellness responses.',
+        S['bullet']))
+    story.append(Paragraph(
+        '&#8226; <b>1.2. Raw Data Visualisation</b> &#8212; comprehensive EDA '
+        'across all four raw datasets: missingness heatmaps, dataset linkage '
+        '(Venn diagrams showing player overlap), temporal coverage, wellness '
+        'and GPS distributions, per-player radar charts.',
+        S['bullet']))
+    story.append(Paragraph(
+        '&#8226; <b>1.3. Processed Data Visualisation</b> &#8212; EDA of the '
+        'merged RTT.xlsx: variable distributions across the full season, '
+        'per-player wellness trajectories, ACWR time series, feature '
+        'correlation heatmaps.',
         S['bullet']))
 
     story.append(Paragraph(
-        '&#8226; <b>Match Analysis</b> &#8212; dedicated exploration of match-level '
-        'data from Games.xlsx: match intensity distributions, per-player performance '
-        'profiles, playing time patterns, and the relationship between match load and '
-        'subsequent wellness responses.',
-        S['bullet']))
-
+        '<b>Level 2 &#8212; Experiments</b> (described in Sections 3&#8211;5):',
+        S['body']))
     story.append(Paragraph(
-        '&#8226; <b>Data quality checks</b> &#8212; automated validation of the '
-        'processed dataset (column completeness, temporal integrity, ACWR flags) '
-        'and targeted investigation of Training Intensity missingness patterns.',
+        '&#8226; <b>2.1. Experiment 1</b> &#8212; Match Intensity prediction '
+        '(reference / exploratory)',
+        S['bullet']))
+    story.append(Paragraph(
+        '&#8226; <b>2.2. Experiment 2</b> &#8212; Training Intensity prediction '
+        '(primary experiment)',
+        S['bullet']))
+    story.append(Paragraph(
+        '&#8226; <b>2.3. Experiment 3</b> &#8212; Status Decrease prediction '
+        '(auxiliary experiment)',
         S['bullet']))
 
     story.append(Paragraph('<b>Key engineered variables</b>', S['h2']))
@@ -360,22 +432,30 @@ def build_pdf(output_path: Path):
     story.append(Paragraph(
         '<b>Training Intensity Yesterday</b> (the treatment variable): '
         'A composite GPS score capturing how hard a player trained on the '
-        'previous day. Computed as <i>tanh(mean(TD%, HSD%, Dec%, Sprints%) '
-        '/ 100)</i>, where each GPS metric is expressed as a percentage of '
-        'the player\'s personal match benchmark. The tanh function soft-caps '
-        'the score in [0, 1). A value of 0 means full rest; values near 1 '
-        'approach match-equivalent effort. Free days (no training) receive a '
-        'score of exactly 0.',
+        'previous day. Computed as <i>tanh(harmonic_mean(TD%, HSD%, Dec%, '
+        'Sprints%) / 100)</i>, where each GPS metric is expressed as a '
+        'percentage of the player\'s personal match benchmark. The harmonic '
+        'mean penalises sessions where one component is disproportionately '
+        'low (e.g., high distance but no sprints), ensuring the score '
+        'reflects balanced high-intensity effort. The tanh function soft-caps '
+        'the score in [0, 1): 0 = full rest, values near 1 = match-equivalent '
+        'effort. Free days receive exactly 0. The per-player distribution of '
+        'Training Intensity is shown in the figure below.',
         S['body']))
 
     story.append(Paragraph(
         '<b>Match Intensity Yesterday</b> (the match-day outcome): '
-        'A composite match performance score computed as '
-        '<i>sqrt(HID/BIP &#215; HIE/BIP) &#215; sqrt(clip(minutes, 15, 90) '
-        '/ 90)</i>, where HID/BIP is high-intensity distance per ball-in-play '
-        'minute and HIE/BIP is high-intensity efforts per ball-in-play minute. '
-        'This captures both the intensity and duration of a player\'s match '
-        'contribution. Only filled on the day after a match.',
+        'A composite match performance score computed as the '
+        '<i>geometric mean</i> of two key metrics &#8212; high-intensity '
+        'distance per ball-in-play minute (HID/BIP) and high-intensity '
+        'efforts per ball-in-play minute (HIE/BIP) &#8212; scaled by minutes '
+        'played: <i>sqrt(HID/BIP &#215; HIE/BIP) &#215; sqrt(clip(minutes, '
+        '15, 90) / 90)</i>. The geometric mean ensures that both distance '
+        'and effort count equally (a player who runs far but makes few '
+        'explosive efforts does not score as highly as one who does both). '
+        'The minutes scaling rewards full-match participation. The '
+        'distribution of Match Intensity across all matches is shown below. '
+        'Only filled on the day after a match.',
         S['body']))
 
     story.append(Paragraph(
@@ -396,6 +476,28 @@ def build_pdf(output_path: Path):
         'indication).',
         S['body']))
 
+    # ── Figures ──────────────────────────────────────────────────────────
+    proc_dir = output_path.parent / 'data' / 'processed'
+    mi_hist = proc_dir / 'Match Intensity Distribution.png'
+    ti_box  = proc_dir / 'Training Intensity Per Player Distribution.png'
+
+    if mi_hist.exists():
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(
+            '<i>Figure 1: Distribution of Match Intensity across all player-match '
+            'observations. Mean = 3.41, median = 3.34.</i>', S['meta']))
+        story.append(Image(str(mi_hist), width=CONTENT_W * 0.75,
+                           height=CONTENT_W * 0.45))
+        story.append(Spacer(1, 6))
+
+    if ti_box.exists():
+        story.append(Paragraph(
+            '<i>Figure 2: Training Intensity Yesterday per player, sorted by '
+            'median. Coloured by playing position.</i>', S['meta']))
+        story.append(Image(str(ti_box), width=CONTENT_W,
+                           height=CONTENT_W * 0.35))
+        story.append(Spacer(1, 6))
+
     story.append(PageBreak())
 
     # ==================================================================
@@ -409,24 +511,33 @@ def build_pdf(output_path: Path):
         S['body']))
 
     story.append(Paragraph(
-        '<b>Why we tried this:</b> If match-day performance were predictable '
-        'from training data, we could directly optimise the training regime '
-        'to maximise match output. This would be the ideal causal target '
-        'for the Dynamic Treatment Regime framework.',
+        '<b>Why we tried this first:</b> Before building a causal framework '
+        'to optimise training load, we needed to verify whether the intended '
+        'outcome &#8212; match-day performance &#8212; is even '
+        '<i>predictable</i> from training and wellness data. If standard '
+        '(non-causal) ML cannot predict it, then causal methods will '
+        'certainly not identify a causal effect either. This experiment '
+        'serves as that prerequisite check.',
         S['body']))
 
     story.append(Paragraph(
-        '<b>Setup:</b> We predicted Match Intensity Yesterday (continuous) '
-        'from morning covariates using four models: Ridge Regression, '
-        'XGBoost, CatBoost, and TabPFN. Each model was tested across 10 lag '
-        'values (1&#8211;10 days of history). The dataset is small &#8212; only '
-        'rows following a match contribute (~248 training, ~72 test samples).',
+        'The notebook starts with a <b>diagnostic EDA</b> examining the '
+        'prediction task: dataset scope, target distribution, feature-target '
+        'correlations, and train/test distribution shift. This revealed '
+        'that the effective dataset is small (~248 training, ~72 test) and '
+        'features have near-zero correlation with the target.',
         S['body']))
 
-    story.append(Paragraph('<b>Results</b>', S['h2']))
+    story.append(Paragraph('<b>Experiment A &#8212; Raw Match Intensity</b>', S['h2']))
+
+    story.append(Paragraph(
+        'We predicted Match Intensity Yesterday from morning covariates '
+        'using Ridge Regression, XGBoost, CatBoost, and TabPFN across '
+        '10 lag values. Player ID was included as a feature.',
+        S['body']))
 
     _table(story,
-           ['Model', 'Best Lag', 'RMSE', 'Null RMSE', 'R2', 'Skill vs Null'],
+           ['Model', 'Best Lag', 'RMSE', 'Null RMSE', 'R2', 'Skill'],
            [
                ['TabPFN', '8', '1.1097', '1.3820', '0.272', '+19.7%'],
                ['CatBoost', '5', '1.1932', '1.3820', '0.158', '+13.7%'],
@@ -436,42 +547,44 @@ def build_pdf(output_path: Path):
            col_widths=[2.5*cm, 2.0*cm, 2.0*cm, 2.5*cm, 2.0*cm, 5.2*cm])
 
     story.append(Paragraph(
-        'The best model (TabPFN) achieves R2 = 0.27, meaning it explains '
-        'about 27% of the variance in match intensity. While this is better '
-        'than the null baseline (predicting the mean for everyone), the '
-        '<b>per-player analysis reveals the problem</b>:',
+        'TabPFN achieves R2 = 0.27 &#8212; seemingly useful. However, '
+        'feature importance analysis reveals that <b>Player ID is the '
+        'dominant feature</b>: the model mostly learns that some players '
+        'consistently perform higher than others, regardless of training.',
+        S['body']))
+
+    story.append(Paragraph('<b>Experiment B &#8212; Personal Deviation</b>', S['h2']))
+
+    story.append(Paragraph(
+        'To test whether there is signal <i>beyond</i> player identity, '
+        'we defined <b>Match Intensity Personal Deviation</b> = a player\'s '
+        'match intensity minus their own expanding-mean baseline. This '
+        'removes the player fixed effect: the model must now predict '
+        'whether a player performs above or below <i>their own average</i>.',
         S['body']))
 
     story.append(Paragraph(
-        '&#8226; Median per-player R2 = <b>-0.75</b> (the model is '
-        '<i>worse</i> than predicting the mean for most players)',
-        S['bullet']))
-    story.append(Paragraph(
-        '&#8226; Only <b>1 out of 17</b> test-set players has R2 > 0',
-        S['bullet']))
-    story.append(Paragraph(
-        '&#8226; The aggregate R2 of 0.27 is driven by '
-        'Player ID being the most important feature &#8212; some players '
-        'consistently perform higher than others regardless of training',
-        S['bullet']))
-
-    story.append(Paragraph(
-        'Adding more historical lags barely helps: the maximum improvement '
-        'from lag=1 to the best lag is only 1.6%. This confirms that the '
-        'morning-of-match-day state captures virtually all recoverable signal.',
+        'Result: all models achieve R2 near zero or negative on the '
+        'deviation target. With the player effect removed, there is '
+        '<b>no recoverable signal</b> linking morning state to within-player '
+        'match performance variation. Per-player median R2 = &#8722;0.75; '
+        'only 1 of 17 players has R2 > 0.',
         S['body']))
 
-    story.append(Paragraph('<b>Conclusion</b>', S['h2']))
+    story.append(Paragraph(
+        'Full results, permutation importance (LOO ablation, greedy forward '
+        'selection), and per-player breakdowns are in '
+        '<b>notebook 2.1. Experiment1</b>.',
+        S['body']))
 
-    _callout(story,
-             'Match-day performance is NOT predictable from training and '
-             'wellness data alone. Too many unobserved factors intervene: '
-             'tactical decisions, opponent quality, team composition, player '
-             'psychology. Since the outcome is not even predictable in a '
-             'standard (non-causal) ML sense, it will certainly not be '
-             'identifiable as a causal target either. This validates the '
-             'decision to focus on more proximal outcomes.',
-             S)
+    _conclusion_box(story, 'Conclusion',
+        'Match-day performance is NOT predictable from training and '
+        'wellness data. Experiment A showed apparent signal (R2=0.27) '
+        'driven entirely by Player ID. Experiment B removed this effect '
+        'and found no signal. Since the outcome is not predictable in '
+        'a non-causal sense, it cannot serve as a causal target. This '
+        'validates redirecting the framework toward proximal outcomes.',
+        S)
 
     story.append(PageBreak())
 
@@ -481,27 +594,39 @@ def build_pdf(output_path: Path):
     _section(story, '4. Experiment 2 &#8212; Training Intensity Prediction', S)
 
     story.append(Paragraph(
-        '<b>Question:</b> Can we recover the coaching staff\'s implicit '
-        'load-assignment policy from observable morning state?',
+        'Given the negative result of Experiment 1 &#8212; match-day '
+        'performance is not predictable from training data &#8212; we '
+        'pivoted to a more achievable and equally valuable question.',
         S['body']))
 
     story.append(Paragraph(
-        '<b>Why this matters:</b> If morning covariates (wellness, fatigue, '
-        'ACWR, days since/until match) predict the training intensity that '
-        'coaches actually prescribe, two things follow: (1) the coaching '
-        'decision-making is <b>systematic and data-driven</b>, and (2) the '
-        'fitted model can serve as a proxy for <b>player readiness to train'
-        '</b> &#8212; if the model predicts high intensity, the player is in '
-        'a state where the coaches would have prescribed a hard session.',
+        '<b>Question:</b> Can we recover the coaching staff\'s implicit '
+        'load-assignment policy from observable morning state? And if so, '
+        'can the model\'s output serve as a <b>data-driven proxy for player '
+        'readiness to train</b>?',
+        S['body']))
+
+    story.append(Paragraph(
+        '<b>Why this matters:</b> Instead of trying to directly optimise '
+        'match performance (which proved intractable), we can capture the '
+        'coaching expertise embedded in 20 months of daily decisions. If '
+        'morning covariates (wellness, fatigue, ACWR, schedule position) '
+        'predict what the coaches actually prescribe, then: (1) the model '
+        '<b>encodes the coaching staff\'s collective judgment</b> about '
+        'player readiness, and (2) the predicted score becomes a continuous '
+        '<b>Readiness to Train</b> metric &#8212; if the model predicts '
+        'high intensity, the player is in a state where the coaches would '
+        'have prescribed a hard session.',
         S['body']))
 
     story.append(Paragraph(
         '<b>Setup:</b> We predicted Training Intensity Yesterday (continuous, '
         '[0,1)) from 28 morning-assessment covariates using four models: '
         'Ridge Regression, XGBoost, CatBoost, and TabPFN. Each was tested '
-        'across 3 lag values (1, 2, 3 days of history). The full dataset was '
-        'used (~14,000 rows after lag creation), giving much larger train and '
-        'test sets than Experiment 1.',
+        'across 3 lag values (1, 2, 3 days of history). The same processed '
+        'RTT.xlsx dataset was used as in all other experiments, but the '
+        'effective sample size is much larger than Experiment 1 because '
+        'every training day contributes (not just match days).',
         S['body']))
 
     story.append(Paragraph('<b>Results</b>', S['h2']))
@@ -514,42 +639,58 @@ def build_pdf(output_path: Path):
         'training intensity is explained by observable player state.',
         S['body']))
 
-    _finding(story,
-             'Key finding: the coaching staff\'s load decisions are systematic '
-             'and largely driven by observable physiological signals. The '
-             'fitted model can serve as a continuous "Readiness to Train" '
-             'score for each player-day.',
-             S)
+    _conclusion_box(story, 'Key Finding',
+        'The coaching staff\'s load decisions are systematic and largely '
+        'driven by observable physiological signals. The fitted model can '
+        'serve as a continuous "Readiness to Train" score for each '
+        'player-day. This is the primary actionable output of the project.',
+        S)
 
     story.append(Paragraph(
-        '<b>Feature importance analysis</b> (using permutation importance and '
-        'SHAP) reveals the <b>top drivers of coaching decisions</b>:',
+        '<b>Feature importance analysis</b> (permutation importance, 10 '
+        'repeats on test set) reveals the <b>top drivers of coaching '
+        'decisions</b>:',
+        S['body']))
+
+    _table(story,
+           ['Rank', 'Feature', 'Importance', 'Interpretation'],
+           [
+               ['1', 'Days Until Match', '0.0102',
+                'Strongest driver: coaches taper intensity as match approaches'],
+               ['2', 'Days Until Match (t-1)', '0.0061',
+                'Previous day\'s schedule position also matters'],
+               ['3', 'Total Distance % Yesterday', '0.0039',
+                'Yesterday\'s GPS load volume (% of match benchmark)'],
+               ['4', 'Total Distance (m) Yesterday', '0.0021',
+                'Raw distance in metres from yesterday\'s session'],
+               ['5', 'Total Distance % Yesterday (t-1)', '0.0015',
+                'Two-day load history contributes'],
+               ['6', 'High Speed Distance (m) Yesterday', '0.0013',
+                'High-speed running volume from previous session'],
+               ['7', 'Total Minutes Yesterday', '0.0011',
+                'Session duration as a load indicator'],
+               ['8', 'Activity Type Yesterday (t-1)', '0.0009',
+                'Type of session two days ago (game, training, recovery)'],
+               ['9', 'Position (t-1)', '0.0008',
+                'Playing position influences prescribed load'],
+               ['10', 'HSD % Yesterday (t-1)', '0.0008',
+                'Two-day high-speed distance history'],
+           ], S,
+           col_widths=[1.2*cm, 5.0*cm, 2.0*cm, 8.0*cm])
+
+    story.append(Paragraph(
+        'The key insight: <b>match-cycle position</b> (Days Until Match) '
+        'is by far the strongest predictor, confirming that coaches follow '
+        'a clear periodisation pattern. GPS load history (total distance, '
+        'high-speed distance) ranks next, indicating that coaches also '
+        'account for cumulative recent load when prescribing intensity.',
         S['body']))
 
     story.append(Paragraph(
-        '&#8226; <b>Days Until Match / Days Since Game</b> &#8212; match-cycle '
-        'position is the single strongest predictor. Coaches follow a clear '
-        'periodisation pattern: intensity peaks mid-cycle and tapers as the '
-        'match approaches.',
-        S['bullet']))
-
-    story.append(Paragraph(
-        '&#8226; <b>ACWR (Acute:Chronic Workload Ratio)</b> &#8212; coaches '
-        'reduce intensity when ACWR is elevated, consistent with Gabbett\'s '
-        'training-injury prevention framework.',
-        S['bullet']))
-
-    story.append(Paragraph(
-        '&#8226; <b>Previous-day training intensity</b> &#8212; strong '
-        'autocorrelation indicates coaches plan multi-day loading sequences '
-        'rather than making independent daily decisions.',
-        S['bullet']))
-
-    story.append(Paragraph(
-        '&#8226; <b>Wellness (fatigue, readiness, soreness)</b> &#8212; '
-        'self-reported physical state modulates load prescription, though '
-        'its importance is secondary to schedule position.',
-        S['bullet']))
+        'Full results tables, SHAP/permutation importance plots, and '
+        'per-player breakdowns are available in <b>notebook 2.2. Experiment2'
+        '</b> with all visualisations preserved.',
+        S['body']))
 
     story.append(Paragraph('<b>Practical use</b>', S['h2']))
 
@@ -559,9 +700,7 @@ def build_pdf(output_path: Path):
         'predicted training intensity that reflects what the coaching staff '
         'would typically prescribe. Deviations between the model\'s prediction '
         'and the actual prescription highlight cases where the coach is '
-        'making an unusual decision &#8212; which may warrant a second look. '
-        'Additionally, the model serves as a <b>propensity model</b> for '
-        'downstream causal estimation (IPTW weighting).',
+        'making an unusual decision &#8212; which may warrant a second look.',
         S['body']))
 
     story.append(PageBreak())
@@ -572,33 +711,40 @@ def build_pdf(output_path: Path):
     _section(story, '5. Experiment 3 &#8212; Status Decrease Prediction', S)
 
     story.append(Paragraph(
-        '<b>Question:</b> Can we predict which players are at risk of a '
-        'status deterioration tomorrow?',
+        'As an auxiliary experiment, we investigated whether training load '
+        'affects short-term player health outcomes. This experiment frames '
+        'the problem explicitly in causal terms.',
         S['body']))
 
     story.append(Paragraph(
-        '<b>What is Status Decrease?</b> A binary indicator (yes/no) '
+        '<b>What is Status Decrease?</b> A binary indicator (0/1) '
         'capturing whether a player\'s medical status worsened from one day '
-        'to the next. For example, going from "Available" to "Attention" or '
-        'from "Attention" to "Injured" counts as a status decrease. This is '
-        'a rare event &#8212; only about 3&#8211;5% of player-days show a '
-        'status decrease.',
+        'to the next (e.g., Available &#8594; Attention, or Attention '
+        '&#8594; Injured). This is a rare event: only about 3&#8211;5% of '
+        'player-days show a status decrease.',
         S['body']))
 
     story.append(Paragraph(
-        '<b>Setup:</b> We used Logistic Regression, XGBoost, and CatBoost '
-        'to predict Status Decrease from morning covariates, running in two '
-        'modes:',
+        '<b>Causal framing:</b> In this experiment, <b>Training Intensity '
+        'Yesterday</b> is explicitly treated as the <b>treatment variable '
+        '(A)</b>, while morning wellness, ACWR, schedule position, and '
+        'other player-state features serve as <b>covariates (L)</b>. '
+        'Status Decrease is the <b>outcome (Y)</b>. The experiment uses '
+        'a single lag (lag=1) to keep the model interpretable.',
         S['body']))
 
     story.append(Paragraph(
-        '&#8226; <b>Prediction mode</b> &#8212; uses only morning state to '
-        'predict tomorrow\'s status (early-warning system)',
+        'Two modes are run:',
+        S['body']))
+
+    story.append(Paragraph(
+        '&#8226; <b>Prediction mode</b> &#8212; uses only morning '
+        'covariates (L) to predict tomorrow\'s status (early-warning system)',
         S['bullet']))
     story.append(Paragraph(
-        '&#8226; <b>Causal framing mode</b> &#8212; adds Training Intensity '
-        'as a covariate to examine whether yesterday\'s load explains today\'s '
-        'status change (diagnostic analysis)',
+        '&#8226; <b>Causal framing mode</b> &#8212; adds Training '
+        'Intensity (A) as treatment variable alongside covariates (L) to '
+        'examine whether yesterday\'s load explains today\'s status change',
         S['bullet']))
 
     story.append(Paragraph('<b>Results</b>', S['h2']))
@@ -623,12 +769,17 @@ def build_pdf(output_path: Path):
         'combined with G-computation or IPTW methods.',
         S['body']))
 
-    _callout(story,
-             'The negative coefficient on Training Intensity demonstrates '
-             'exactly why causal methods are needed: naive regression '
-             'attributes the coach\'s good judgment (prescribing hard '
-             'sessions to healthy players) to the training itself.',
-             S)
+    _conclusion_box(story, 'Conclusion',
+        'The negative coefficient on Training Intensity demonstrates '
+        'exactly why causal methods are needed: naive regression '
+        'attributes the coach\'s good judgment (prescribing hard '
+        'sessions to healthy players) to the training itself. '
+        'Extracting the true causal effect of training intensity on '
+        'player health requires the propensity model from Experiment 2 '
+        'combined with G-computation or IPTW methods. Full results, '
+        'ROC/PR curves, and per-player breakdowns are in '
+        'notebook 2.3. Experiment3.',
+        S)
 
     story.append(PageBreak())
 
@@ -706,7 +857,7 @@ def build_pdf(output_path: Path):
     story.append(Spacer(1, 0.5 * cm))
     _hr(story)
     story.append(Paragraph(
-        'KU Leuven &amp; OH Leuven &#8212; March 2026',
+        f'KU Leuven &amp; OH Leuven &#8212; {gen_date}',
         S['meta']))
 
     # ── Build ─────────────────────────────────────────────────────────
@@ -723,7 +874,6 @@ def build_pdf(output_path: Path):
     )
     doc.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
     print('Saved: %s' % output_path)
-    story.append(Spacer(1, 0.6 * cm))
 
 
 # ---------------------------------------------------------------------------

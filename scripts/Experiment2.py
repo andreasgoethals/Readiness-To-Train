@@ -112,37 +112,20 @@ MODEL_DEFAULTS = {
 # Activity Type Yesterday is included because the previous session type is
 # a strong predictor of the next session type (periodisation logic).
 DEFAULT_COVARIATES = [
-    # Morning wellness assessment
-    'Fatigue (z)', 'Readiness (z)', 'Soreness (z)',
-    'Physical State', 'Sleep Quality (z)', 'Stress (z)',
-    'Mood (z)', 'Mental State', 'Overall Wellbeing',
-    # Yesterday's external load — ACWR and individual GPS %
-    # NOTE: 'Training Intensity Yesterday' is intentionally EXCLUDED here because
-    # it is also the target variable (with target_horizon=1, the target is the
-    # NEXT row's Training Intensity Yesterday = today's coaching assignment).
-    # The data_loader raises a leakage error if it appears in both places.
-    # The individual GPS % columns and raw GPS/HR below capture the same
-    # workload information without name-collision.
+    'Physical State',
+    'Mental State',
     'Total Distance (ACWR) Yesterday',
     'High Speed Distance (ACWR) Yesterday',
     'Any ACWR Danger',
     'Total Distance % Yesterday',
     'High Speed Distance % Yesterday',
-    'High Decelerations % Yesterday',
-    'Sprints % Yesterday',
-    # Yesterday's raw GPS/HR
+    'Perceived Exertion Yesterday',
     'Total Minutes Yesterday',
-    'Total Distance (m) Yesterday',
-    'High Speed Distance (m) Yesterday',
     'Avg Heart Rate Yesterday',
     'Heart Rate Exertion Yesterday',
-    # Temporal context
-    'Days Since Game', 'Days Until Match',
-    # Historical availability
-    'Medical Availability Last 14 Days',
-    'Club Attendance Last 14 Days',
-    # Player profile and previous session type
-    'Position', 'Activity Type Yesterday',
+    'Days Since Game',
+    'Days Until Match',
+    'Player ID',
 ]
 
 
@@ -328,8 +311,8 @@ def run_experiment(
         raise ValueError(
             f"model_type must be one of {sorted(VALID_MODELS)}, got {model_type!r}"
         )
-    if lag < 1:
-        raise ValueError(f"lag must be >= 1, got {lag}")
+    if lag < 0:
+        raise ValueError(f"lag must be >= 0, got {lag}")
     if not covariates:
         raise ValueError("covariates list must not be empty")
 

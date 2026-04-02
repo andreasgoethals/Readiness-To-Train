@@ -39,11 +39,11 @@ Readiness-To-Train/
 │       └── RTT.xlsx                  # Auto-generated merged dataset (14,359 x 46 cols)
 │
 ├── notebooks/
-│   ├── 0. Match Analysis.ipynb             # Match-level data exploration and analysis
-│   ├── 0. Processed_Data_Quality.ipynb     # Automated quality checks on RTT.xlsx
-│   ├── 0. TI_Missingness_Analysis.ipynb    # Training Intensity NaN pattern analysis
-│   ├── 1.1. Raw Data Visualisation.ipynb   # EDA across all 4 raw datasets
-│   ├── 1.2. Processed Data Visualisation.ipynb  # EDA of processed RTT.xlsx
+│   ├── 0. Processed_Data_Quality.ipynb     # Data quality: automated checks on RTT.xlsx
+│   ├── 0. TI_Missingness_Analysis.ipynb    # Data quality: Training Intensity NaN patterns
+│   ├── 1.1. Match Analysis.ipynb           # EDA: match-level data exploration
+│   ├── 1.2. Raw Data Visualisation.ipynb   # EDA: all 4 raw datasets
+│   ├── 1.3. Processed Data Visualisation.ipynb  # EDA: processed RTT.xlsx
 │   ├── 2.1. Experiment1.ipynb              # Experiment 1: Match Intensity prediction
 │   ├── 2.2. Experiment2.ipynb              # Experiment 2: Training Intensity prediction
 │   └── 2.3. Experiment3.ipynb              # Experiment 3: Status Decrease prediction
@@ -84,20 +84,20 @@ Readiness-To-Train/
 
 ## Notebooks
 
-### Data Quality & Exploration (prefix `0.`)
+### Data Quality Checks (prefix `0.`)
 
 | Notebook | Description |
 |----------|-------------|
-| `0. Match Analysis` | Exploratory analysis of match-level data from Games.xlsx: match intensity distributions, per-player profiles, playing time patterns, and match performance metrics |
-| `0. Processed_Data_Quality` | Automated quality checks on the processed RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flag validation, encoding checks |
-| `0. TI_Missingness_Analysis` | Investigation of missing values in Training Intensity Yesterday: why certain rows have NaN, validation of the free-day fill logic, missingness patterns by activity type |
+| `0. Processed_Data_Quality` | Automated quality checks on the processed RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flag validation |
+| `0. TI_Missingness_Analysis` | Investigation of missing values in Training Intensity Yesterday: why certain rows have NaN, validation of the free-day fill logic |
 
-### Exploratory Data Analysis (prefix `1.x`)
+### Data Visualisation & EDA (prefix `1.x`)
 
 | Notebook | Description |
 |----------|-------------|
-| `1.1. Raw Data Visualisation` | Comprehensive EDA across all 4 raw datasets. Includes missingness heatmaps, dataset linkage analysis (Venn diagrams showing player overlap), temporal coverage, wellness and GPS distributions, per-player radar charts, and cross-dataset correlations |
-| `1.2. Processed Data Visualisation` | EDA of the processed RTT.xlsx. Covers variable distributions, temporal patterns over the season, per-player wellness trajectories, ACWR time series, and feature correlation heatmaps |
+| `1.1. Match Analysis` | Match-level data exploration from Games.xlsx: match intensity distributions, per-player performance profiles, playing time patterns |
+| `1.2. Raw Data Visualisation` | Comprehensive EDA across all 4 raw datasets: missingness heatmaps, dataset linkage (Venn diagrams), temporal coverage, per-player radar charts |
+| `1.3. Processed Data Visualisation` | EDA of the processed RTT.xlsx: variable distributions, temporal patterns, per-player wellness trajectories, ACWR time series, correlation heatmaps |
 
 ### Experiments (prefix `2.x`)
 
