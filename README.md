@@ -1,202 +1,160 @@
 # Readiness to Train
 
-**Prescriptive Analytics for Optimal Training Intensity**
-KU Leuven & OH Leuven
+### Causal Modelling of Player Readiness to Train in Professional Football
+
+A collaboration between **KU Leuven** and **OH Leuven** exploring whether causal machine learning can optimise daily training intensity decisions for professional football players.
+
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-proprietary-red.svg)](LICENSE)
 
 ---
 
-## Overview
+## The Problem
 
-This project develops a **causal machine learning system** that estimates each OH Leuven player's daily *Readiness to Train* and recommends an optimal training intensity. The recommended intensity is a continuous score in **[0, 1]**: 0 means full rest, ~1 means match-equivalent effort.
+In professional football, coaching staff make daily decisions about how hard each player should train. These decisions balance competing objectives: train too little and the player arrives at match day underprepared; train too hard and the player arrives fatigued or injured. The optimal training intensity depends on each player's current physiological state, their recent load history, and their position in the match cycle.
 
-The system is built within a **Dynamic Treatment Regime (DTR)** framework, using G-methods to handle the time-varying confounding that arises when coaching decisions are observational.
+This project asks: **can we build a data-driven system that recommends the optimal training intensity for each player, each day, to maximise match-day performance?**
 
-> **Important:** The objective is *not* injury minimisation. A policy that minimises injury risk trivially prescribes zero load. The true objective is **performance optimisation under biological constraints**.
-
----
-
-## Why Causal Inference?
-
-Standard ML asks *"what will happen?"*. This project asks *"what training intensity today best contributes to future match-day performance?"* Three reasons this requires causal reasoning:
-
-1. **Time-Varying Confounding Affected by Prior Treatment** -- covariates at time *t* (fatigue, ACWR) are simultaneously *consequences* of treatment at *t-1* and *causes* of treatment at *t*. Classical regression fails here; G-methods are required.
-2. **Treatment-Confounder Feedback** -- coaches prescribe hard sessions when players look fresh. The observed load-performance association conflates physiological response with coach selection behaviour.
-3. **Sequential Decision-Making** -- the question is not just *"what training today?"* but *"what sequence of intensities over the match cycle maximises match-day performance?"* -- a DTR problem.
+This is fundamentally a **causal** question. Coaches already adjust training based on player state (fresh players get harder sessions), which means naive correlations between training load and performance are confounded by the coach's selection behaviour. Disentangling the true effect of training from the coach's judgment requires causal inference methods.
 
 ---
 
-## Project Structure
+## The Approach
+
+We framed the problem as a **Dynamic Treatment Regime (DTR)** --- a sequential decision-making framework from causal inference where the "treatment" (training intensity) is prescribed daily based on evolving patient/player state. The project proceeded in three stages:
+
+1. **Can we predict match performance?** (Experiment 1) --- First, we tested whether match-day performance is even predictable from training data. If not, it cannot serve as a causal optimisation target.
+
+2. **Can we predict coaching decisions?** (Experiment 2) --- After match performance proved unpredictable, we pivoted: instead of optimising the outcome directly, we modelled the coaching staff's implicit load-assignment policy. If the model accurately predicts what an experienced coach would prescribe, it effectively encodes their expertise as a continuous *Readiness to Train* score.
+
+3. **Can we predict player health transitions?** (Experiment 3) --- As an auxiliary experiment, we investigated whether next-day player status deterioration is predictable from morning state.
+
+---
+
+## Key Results
+
+### Experiment 1: Match Intensity is Not Predictable
+
+The best model (Ridge Regression) achieved R2 = 0.27 on raw match intensity --- but **permutation importance revealed this was entirely driven by Player ID** (some players consistently perform higher than others). A follow-up experiment on *personal deviation* (each player vs. their own baseline) showed **R2 near zero for all models**: no within-player signal exists.
+
+> **Implication:** Match-day performance cannot serve as a causal target. Too many unobserved factors (tactics, opponent, psychology) intervene between training and match output.
+
+### Experiment 2: Coaching Decisions Are Recoverable (R2 = 0.43)
+
+The best model (**TabPFN, lag=3**) explains **43% of the variance** in coaching training intensity decisions (Pearson r = 0.66). The model works consistently: **20 of 22 test-set players** have positive per-player R2.
+
+**Top predictive features:** Days Until Match (periodisation structure), GPS load history (Total Distance %), and heart rate metrics. This confirms that coaching decisions are systematic and driven by observable physiological signals.
+
+> **Implication:** The model serves as a data-driven *Readiness to Train* proxy, encoding the coaching staff's collective expertise into a continuous score.
+
+### Experiment 3: Status Decrease Prediction (AUC = 0.64)
+
+Modest discriminative ability above random, but limited by severe class imbalance (~2% positive rate, only 18 events in test set).
+
+---
+
+## Data
+
+The project uses **daily monitoring data** from OH Leuven covering **28 first-team players** over ~20 months (July 2024 -- February 2026). Four raw datasets are merged into a single analysis-ready file:
+
+| Dataset | Rows | Players | Content |
+|---------|------|---------|---------|
+| Readiness_Data | 14,359 | 28 | Wellness z-scores, ACWR, GPS benchmarks, medical status |
+| Raw_Data | 9,968 | 84 | Detailed GPS, heart rate, session metadata |
+| Sessions | 1,206 | --- | Match day flags, session types |
+| Games | 403 | 24 | High-intensity distance/efforts per ball-in-play |
+
+**Processed dataset:** `data/processed/RTT.xlsx` (5,235 useful rows, 46 engineered features). Full variable documentation in `data/raw/Raw Data Dictionary.pdf` and `data/processed/RTT Data Dictionary.pdf`.
+
+**Key engineered variables:**
+- **Training Intensity** [0, 1): `tanh(harmonic_mean(TD%, HSD%, Dec%, Sprints%) / 100)` --- the coaching staff's daily load prescription
+- **Match Intensity**: geometric mean of high-intensity distance and efforts per ball-in-play minute, scaled by playing time
+- **Status Decrease**: binary indicator of next-day medical status worsening (~2% prevalence)
+
+---
+
+## Repository Structure
 
 ```
 Readiness-To-Train/
 ├── data/
-│   ├── raw/                          # Original xlsx files (NDA-protected, gitignored)
-│   │   ├── Readiness_Data.xlsx       # 14,359 rows x 24 cols, 28 players (daily)
-│   │   ├── Raw_Data.xlsx             # 9,968 rows x 39 cols, 84 players (session-level)
-│   │   ├── Sessions.xlsx             # 1,206 rows x 9 cols (team-session metadata)
-│   │   └── Games.xlsx                # 403 rows x 9 cols, 24 players (match performance)
-│   └── processed/
-│       └── RTT.xlsx                  # Auto-generated merged dataset (14,359 x 46 cols)
+│   ├── raw/                          # Original xlsx + Raw Data Dictionary.pdf
+│   └── processed/                    # RTT.xlsx + RTT Data Dictionary.pdf
 │
 ├── notebooks/
-│   ├── 0. Processed_Data_Quality.ipynb     # Data quality: automated checks on RTT.xlsx
-│   ├── 0. TI_Missingness_Analysis.ipynb    # Data quality: Training Intensity NaN patterns
-│   ├── 1.1. Match Analysis.ipynb           # EDA: match-level data exploration
-│   ├── 1.2. Raw Data Visualisation.ipynb   # EDA: all 4 raw datasets
-│   ├── 1.3. Processed Data Visualisation.ipynb  # EDA: processed RTT.xlsx
-│   ├── 2.1. Experiment1.ipynb              # Experiment 1: Match Intensity prediction
-│   ├── 2.2. Experiment2.ipynb              # Experiment 2: Training Intensity prediction
-│   └── 2.3. Experiment3.ipynb              # Experiment 3: Status Decrease prediction
+│   ├── 0. Processed_Data_Quality     # Data quality checks
+│   ├── 0. TI_Missingness_Analysis    # Training Intensity NaN analysis
+│   ├── 1.1. Match Analysis           # Match-level EDA
+│   ├── 1.2. Raw Data Visualisation   # EDA across all 4 raw datasets
+│   ├── 1.3. Processed Data Visualisation  # EDA of processed RTT.xlsx
+│   ├── 2.1. Experiment1              # Match Intensity prediction
+│   ├── 2.2. Experiment2              # Training Intensity prediction
+│   └── 2.3. Experiment3              # Status Decrease prediction
 │
-├── scripts/
-│   ├── Experiment1.py                # Experiment 1 runner
-│   ├── Experiment2.py                # Experiment 2 runner
-│   ├── Experiment3.py                # Experiment 3 runner
-│   ├── generate_visualizations.py    # Batch DAG generation for all 28 players
-│   └── generate_project_results.py   # Generate Project Results.pdf
+├── scripts/                          # Experiment runner scripts
+│   ├── Experiment1.py
+│   ├── Experiment2.py
+│   └── Experiment3.py
 │
 ├── src/
 │   ├── data/
 │   │   ├── data_preprocessing.py     # Multi-dataset merge & feature engineering
-│   │   └── data_loader.py            # ML-ready dataset creation with lag & splits
+│   │   └── data_loader.py            # ML-ready dataset creation (lags, splits)
 │   ├── methods/
-│   │   └── dag_creator.py            # Causal DAG builder (longitudinal, player-specific)
+│   │   └── dag_creator.py            # Causal DAG builder (player-specific)
 │   ├── models/
-│   │   ├── lin_reg.py                # Ridge Regression (HPO via Optuna)
-│   │   ├── log_reg.py                # Logistic Regression (HPO via Optuna)
-│   │   ├── xgboost.py                # XGBoost (GPU-accelerated, early stopping)
-│   │   ├── catboost.py               # CatBoost (GPU, native categoricals, HPO)
+│   │   ├── lin_reg.py                # Ridge Regression (Optuna HPO)
+│   │   ├── log_reg.py                # Logistic Regression (Optuna HPO)
+│   │   ├── xgboost.py                # XGBoost (GPU, early stopping)
+│   │   ├── catboost.py               # CatBoost (GPU, native categoricals)
 │   │   └── tabpfn.py                 # TabPFN v2 (in-context learning, GPU)
 │   └── utils/
-│       ├── generate_project_overview.py   # Generate Project Overview.pdf
-│       └── generate_raw_data_dict.py      # Generate Raw Data Dictionary.pdf
+│       ├── generate_project_overview.py
+│       ├── generate_project_results.py
+│       ├── generate_visualizations.py
+│       └── generate_raw_data_dict.py
 │
-├── images/DAGs/                      # Per-player causal DAG visualizations
-├── results/                          # Model outputs
+├── images/DAGs/                      # 499 causal DAG visualizations (all players, all cycles)
 ├── Project Overview.pdf              # Problem statement & research design
 ├── Project Results.pdf               # Experimental findings & conclusions
-├── CLAUDE.md                         # Full technical documentation
-├── requirements.txt
-└── .gitignore
+└── requirements.txt
 ```
 
 ---
 
-## Notebooks
+## Models
 
-### Data Quality Checks (prefix `0.`)
-
-| Notebook | Description |
-|----------|-------------|
-| `0. Processed_Data_Quality` | Automated quality checks on the processed RTT.xlsx: player coverage, column completeness, temporal integrity, ACWR flag validation |
-| `0. TI_Missingness_Analysis` | Investigation of missing values in Training Intensity Yesterday: why certain rows have NaN, validation of the free-day fill logic |
-
-### Data Visualisation & EDA (prefix `1.x`)
-
-| Notebook | Description |
-|----------|-------------|
-| `1.1. Match Analysis` | Match-level data exploration from Games.xlsx: match intensity distributions, per-player performance profiles, playing time patterns |
-| `1.2. Raw Data Visualisation` | Comprehensive EDA across all 4 raw datasets: missingness heatmaps, dataset linkage (Venn diagrams), temporal coverage, per-player radar charts |
-| `1.3. Processed Data Visualisation` | EDA of the processed RTT.xlsx: variable distributions, temporal patterns, per-player wellness trajectories, ACWR time series, correlation heatmaps |
-
-### Experiments (prefix `2.x`)
-
-| Notebook | Target | Task | Description |
-|----------|--------|------|-------------|
-| `2.1. Experiment 1` | Match Intensity Yesterday | Regression | Attempts to predict match-day performance from morning covariates. Serves as a reference to test whether match intensity is predictable at all. Includes full model comparison (Ridge, XGBoost, CatBoost, TabPFN) across 10 lag values, feature importance analysis, and per-player breakdown |
-| `2.2. Experiment 2` | Training Intensity Yesterday | Regression | Models the coaching staff's load-assignment decisions from morning player state. Compares 4 models across 3 lag values with SHAP / permutation importance analysis. The fitted model can serve as a propensity model for downstream causal estimation |
-| `2.3. Experiment 3` | Status Decrease | Classification | Predicts next-day player status deterioration (binary, ~3-5% prevalence). Runs in two modes: pure prediction (early-warning) and causal framing (adds training intensity as a covariate). Includes ROC/PR analysis and per-player AUC breakdown |
-
----
-
-## Data Pipeline
-
-```
-Readiness_Data.xlsx  ---+
-Raw_Data.xlsx        ---+-- data_preprocessing.py --> data/processed/RTT.xlsx
-Sessions.xlsx        ---+                             (14,359 rows x 46 cols)
-Games.xlsx           ---+
-```
-
-The processed dataset merges all four raw sources:
-- **Readiness_Data** (base): daily player monitoring -- wellness z-scores, GPS benchmarks, ACWR, medical status
-- **Raw_Data** (merged): detailed session-level GPS/HR, shifted +1 day ("Yesterday" columns)
-- **Sessions** (merged): team-level session metadata for match day detection
-- **Games** (merged): match performance data, shifted +1 day
-
-All preprocessing is fully reproducible from the raw files via `python src/data/data_preprocessing.py`.
-
----
-
-## Causal Framework
-
-| Variable | Symbol | Examples |
-|----------|--------|---------|
-| Player covariates | **L_t** | Wellness z-scores, ACWR, GPS %, Days Since/Until Match |
-| Treatment | **A_t** | Training Intensity in [0,1) |
-| Outcome | **Y** | Status Decrease (short-term), Match Intensity (long-term) |
-
-**Causal methods:** G-computation, MSM/IPTW, G-Estimation/SNMM, Q-learning, dWOLS
+| Model | Type | GPU | Strengths |
+|-------|------|-----|-----------|
+| **Ridge Regression** | Linear | No | Interpretable coefficients, fast, SHAP-compatible |
+| **Logistic Regression** | Linear | No | Log-odds interpretation, balanced class weights |
+| **XGBoost** | Tree ensemble | `device='cuda'` | High performance, SHAP TreeExplainer |
+| **CatBoost** | Tree ensemble | `task_type='GPU'` | Native categorical handling, robust HPO |
+| **TabPFN v2** | Transformer | `device='cuda'` | In-context learning, no iterative training, excels on small datasets |
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies (PyTorch CUDA must be installed separately)
+# Install PyTorch with CUDA (required for TabPFN GPU)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# Install remaining dependencies
 pip install -r requirements.txt
 
-# 2. Regenerate processed data
+# Regenerate processed data from raw files
 python src/data/data_preprocessing.py
 
-# 3. Run experiments
+# Run experiments
 python scripts/Experiment1.py
 python scripts/Experiment2.py
 python scripts/Experiment3.py
 
-# 4. Generate reports
-python scripts/generate_project_results.py
-```
-
----
-
-## GPU Acceleration
-
-All GPU-capable models run on CUDA by default:
-
-| Model | GPU parameter | Requirement |
-|-------|--------------|-------------|
-| XGBoost | `device='cuda'` | XGBoost >= 2.0, CUDA toolkit |
-| CatBoost | `task_type='GPU'` | CatBoost >= 1.2, CUDA toolkit |
-| TabPFN | `device='cuda'` | PyTorch **CUDA build**, tabpfn >= 2.0 |
-
-**Important:** `pip install torch` installs CPU-only by default. Install the CUDA build first:
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-```
-
----
-
-## Generated Documents
-
-| Document | Generator | Description |
-|----------|-----------|-------------|
-| `Project Overview.pdf` | `src/utils/generate_project_overview.py` | Problem statement, research design, causal framework |
-| `Project Results.pdf` | `scripts/generate_project_results.py` | Experimental findings and conclusions |
-| `data/raw/Raw Data Dictionary.pdf` | `src/utils/generate_raw_data_dict.py` | Documentation of all raw data columns |
-| `data/processed/RTT Data Dictionary.pdf` | `src/data/data_preprocessing.py` | Documentation of processed dataset columns |
-
----
-
-## Key Dependencies
-
-```
-torch >= 2.0 (CUDA)   pandas >= 2.0        numpy >= 1.24       scipy >= 1.10
-scikit-learn >= 1.3    xgboost >= 2.0       catboost >= 1.2     optuna >= 4.0
-tabpfn >= 2.0          shap >= 0.44         tqdm >= 4.0
-networkx >= 3.0        matplotlib >= 3.7    seaborn >= 0.12
-reportlab >= 4.0       openpyxl >= 3.1      ipywidgets >= 8.0
+# Generate reports and DAG visualizations
+python src/utils/generate_project_results.py
+python src/utils/generate_project_overview.py
+python src/utils/generate_visualizations.py
 ```
 
 ---
@@ -213,4 +171,4 @@ reportlab >= 4.0       openpyxl >= 3.1      ipywidgets >= 8.0
 
 ---
 
-*KU Leuven & OH Leuven -- March 2026*
+*KU Leuven & OH Leuven*

@@ -1,64 +1,45 @@
 # ===========================================================
-# OHL Player Readiness — Causal ML Project
+# Readiness to Train — KU Leuven & OH Leuven
+# ===========================================================
+#
+# IMPORTANT: Install PyTorch with CUDA support BEFORE this file:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# Replace cu128 with your CUDA version. CPU fallback: omit --index-url.
+#
+# Then: pip install -r requirements.txt
 # ===========================================================
 
-# -----------------------------------------------------------
-# Core Data Science
-# -----------------------------------------------------------
-pandas>=2.0.0
+# Core
+pandas>=2.0.0,<3.0.0
 numpy>=1.24.0
 scipy>=1.10.0
 
-# -----------------------------------------------------------
-# Visualization
-# -----------------------------------------------------------
-matplotlib>=3.7.0
-seaborn>=0.12.0
-missingno>=0.5.0
-matplotlib-venn>=0.11.0
-plotly>=5.0.0
-
-# -----------------------------------------------------------
-# Deep Learning / GPU (install PyTorch with CUDA first!)
-# -----------------------------------------------------------
-# PyTorch CUDA is NOT pip-installable from PyPI — install manually:
-#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-# (Replace cu128 with your CUDA version: cu118, cu121, cu124, cu128)
-# CPU-only fallback: pip install torch torchvision torchaudio
-
-# -----------------------------------------------------------
 # Machine Learning
-# -----------------------------------------------------------
 scikit-learn>=1.3.0
 xgboost>=2.0.0
 catboost>=1.2.0
 optuna>=4.0.0
 tabpfn>=2.0.0
 
-# -----------------------------------------------------------
 # Explainability
-# -----------------------------------------------------------
 shap>=0.44.0
 
-# -----------------------------------------------------------
-# Statistical Modelling
-# -----------------------------------------------------------
-statsmodels>=0.14.0
+# Visualisation
+matplotlib>=3.7.0
+seaborn>=0.12.0
+missingno>=0.5.0
+matplotlib-venn>=0.11.0
+plotly>=5.0.0
 
-# -----------------------------------------------------------
-# Causal Inference & DAG
-# -----------------------------------------------------------
+# Causal DAGs
 networkx>=3.0.0
 
-# -----------------------------------------------------------
-# File I/O
-# -----------------------------------------------------------
+# File I/O & PDF generation
 openpyxl>=3.1.0
 reportlab>=4.0.0
+Pillow>=9.0.0
 
-# -----------------------------------------------------------
-# Jupyter & Development
-# -----------------------------------------------------------
+# Jupyter
 ipykernel>=6.25.0
-jinja2>=3.1.0
 tqdm>=4.60.0
+jinja2>=3.1.0

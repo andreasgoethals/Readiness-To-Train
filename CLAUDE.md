@@ -1,6 +1,6 @@
 # Readiness to Train - Project Documentation
 
-**Generated:** 2026-02-26  **Last Updated:** 2026-03-31
+**Generated:** 2026-02-26  **Last Updated:** 2026-04-16
 **Project:** Causal Modelling of Player Readiness to Train
 **Partnership:** KU Leuven & OH Leuven
 **Purpose:** Causal analytics for daily training load decisions using longitudinal observational panel data
@@ -177,8 +177,7 @@ Readiness-To-Train/
 │   ├── Experiment1.py               # Exp 1: predict Match Intensity (reference/exploratory only)
 │   ├── Experiment2.py               # Exp 2: treatment policy modelling (Training Intensity prediction)
 │   ├── Experiment3.py               # Exp 3: short-term load response (Status Decrease prediction)
-│   ├── generate_visualizations.py   # Batch DAG generation for all 28 players
-│   └── generate_project_results.py  # Generate Project Results.pdf
+│   └── Experiment3.py                # Experiment 3 runner (Status Decrease)
 │
 ├── src/
 │   ├── data/
@@ -197,8 +196,10 @@ Readiness-To-Train/
 │   │   └── tabpfn.py                # TabPFN v2 (in-context learning, no HPO)
 │   │
 │   └── utils/                       # Utility scripts for PDF generation
-│       ├── generate_project_overview.py  # Regenerate Project Overview.pdf
-│       └── generate_raw_data_dict.py     # Regenerate data/raw/Raw Data Dictionary.pdf
+│       ├── generate_project_overview.py  # Generate Project Overview.pdf
+│       ├── generate_project_results.py  # Generate Project Results.pdf
+│       ├── generate_visualizations.py   # Generate DAGs for all players (all cycles)
+│       └── generate_raw_data_dict.py    # Generate data/raw/Raw Data Dictionary.pdf
 │
 └── results/                         # Model outputs and saved figures
 ```
@@ -733,14 +734,14 @@ print(f"Test ROC AUC: {results['metrics']['roc_auc']:.4f}")
 | `1.3. Processed Data Visualisation.ipynb` | EDA of processed RTT.xlsx: variable distributions, temporal patterns, per-player profiles, correlation heatmaps. |
 | `2.1. Experiment1.ipynb` | **Reference only.** Predicts Match Intensity (largely unidentifiable causal target). Retained for documentation purposes. |
 | `2.2. Experiment2.ipynb` | **Treatment policy modelling.** Predicts today's Training Intensity from morning covariates. Runs lin_reg, XGBoost, CatBoost, TabPFN; compares RMSE/R²; lag ablation; feature importances. Propensity model foundation. |
-| `2.3. Experiment3.ipynb` | **Short-term load response.** Predicts next-day Status Decrease (binary). Two modes: prediction-only and causal_framing. ROC/PR curves, feature importances, logistic coefficients, per-player AUC. |
+| `2.3. Experiment3.ipynb` | **Short-term load response.** Predicts next-day Status Decrease (binary). Prediction mode only. ROC/PR curves, per-player AUC. Models: LogReg, XGBoost, CatBoost, TabPFN. |
 
 ### Running from Command Line
 
 ```bash
 cd "path/to/Readiness-To-Train"
 python src/data/data_preprocessing.py         # Run multi-dataset preprocessing -> RTT.xlsx
-python scripts/generate_raw_data_dict.py      # Regenerate data/raw/Raw Data Dictionary.pdf
+python src/utils/generate_raw_data_dict.py      # Regenerate data/raw/Raw Data Dictionary.pdf
 python src/models/log_reg.py                  # Run Logistic Regression
 python src/models/xgboost.py                  # Run XGBoost
 python src/models/catboost.py                 # Run CatBoost
@@ -751,8 +752,8 @@ python src/utils/generate_raw_data_dict.py    # Regenerate data/raw/Raw Data Dic
 python scripts/Experiment1.py                 # Exp 1 demo — Match Intensity (reference only)
 python scripts/Experiment2.py                 # Exp 2 demo — Training Intensity prediction (XGBoost, lag=3)
 python scripts/Experiment3.py                 # Exp 3 demo — Status Decrease prediction (both modes)
-python scripts/generate_visualizations.py     # Generate DAGs for all 28 players
-python scripts/generate_project_results.py   # Generate Project Results.pdf
+python src/utils/generate_visualizations.py   # Generate DAGs for all players
+python src/utils/generate_project_results.py # Generate Project Results.pdf
 ```
 
 ---
@@ -868,11 +869,11 @@ results = run_experiment(
 # Causal framing: adds Training Intensity as treatment (diagnostic, NOT valid causal estimate)
 results = run_experiment(
     covariates=DEFAULT_COVARIATES, lag=3, model_type='log_reg',
-    mode='causal_framing',
+    mode='prediction',
 )
 ```
 
-**Parameters:** `covariates`, `lag` (≥ 1), `model_type` (`'log_reg'`, `'xgboost'`, `'catboost'`, `'tabpfn'`), `mode` (`'prediction'` or `'causal_framing'`), `test_size`, `val_size`, `random_state`, `verbose`, `**model_kwargs`.
+**Parameters:** `covariates`, `lag` (>= 0), `model_type` (`'log_reg'`, `'xgboost'`, `'catboost'`, `'tabpfn'`), `mode` (`'prediction'`), `test_size`, `val_size`, `random_state`, `verbose`, `**model_kwargs`.
 
 **Returns:**
 ```python
@@ -895,10 +896,10 @@ results = run_experiment(
 }
 ```
 
-### DAG Batch Generator (`scripts/generate_visualizations.py`)
+### DAG Batch Generator (`src/utils/generate_visualizations.py`)
 
 ```python
-from scripts.generate_visualizations import generate_all_player_dags
+from src.utils.generate_visualizations import generate_all_player_dags
 generate_all_player_dags()  # Generates 4 DAGs per player into images/DAGs/player &lt;id&gt;/
 ```
 
@@ -995,6 +996,6 @@ python src/data/data_preprocessing.py
 
 ---
 
-**Last Updated:** 2026-03-31
+**Last Updated:** 2026-04-16
 **Python Version:** 3.8+
-**Key Dependencies:** torch (CUDA build), pandas, numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, shap, tqdm, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2
+**Key Dependencies:** torch (CUDA build), pandas (<3.0), numpy, scipy, scikit-learn, xgboost, catboost, tabpfn, optuna, shap, tqdm, Pillow, matplotlib, seaborn, missingno, matplotlib-venn, plotly, reportlab, openpyxl, networkx, jinja2

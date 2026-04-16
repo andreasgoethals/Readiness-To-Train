@@ -3,7 +3,7 @@ Standalone script to generate the Raw Data Dictionary PDF.
 Saved to: data/raw/Raw Data Dictionary.pdf
 
 Run from the project root:
-    python scripts/generate_raw_data_dict.py
+    python src/utils/generate_raw_data_dict.py
 """
 from pathlib import Path
 from datetime import datetime

@@ -164,7 +164,7 @@ def _table(story, header, rows, styles, col_widths=None):
         data.append([Paragraph(str(c), styles['td']) for c in row])
 
     t = Table(data, colWidths=col_widths, repeatRows=1,
-              hAlign='LEFT', splitByRow=True)
+              hAlign='CENTER', splitByRow=True)
 
     style_cmds = [
         ('BACKGROUND', (0, 0), (-1, 0), LIGHT),
@@ -198,18 +198,19 @@ def _page_number(canvas, doc):
 # PDF content
 # ─────────────────────────────────────────────────────────────────────────────
 def build_pdf(output_path: Path):
+    from reportlab.platypus import Image
     S = _styles()
     story = []
+    project_root = output_path.parent
 
     # ── Cover ─────────────────────────────────────────────────────────────────
-    story.append(Spacer(1, 1.8 * cm))   # push title down from top margin
+    story.append(Spacer(1, 1.8 * cm))
     story.append(Paragraph('Readiness to Train', S['title']))
-    # spaceAfter=16 on title + spaceBefore=6 on subtitle prevents overlap
     story.append(Paragraph(
         'Prescriptive Analytics for Optimal Training Intensity', S['subtitle']))
     story.append(Spacer(1, 0.4 * cm))
     story.append(Paragraph(
-        'KU Leuven &amp; OH Leuven &#8212; PhD Research Project', S['meta']))
+        'KU Leuven &amp; OH Leuven', S['meta']))
     story.append(Paragraph('Project Overview &amp; Problem Statement', S['meta']))
     story.append(Spacer(1, 0.8 * cm))
     _hr(story)
@@ -219,34 +220,23 @@ def build_pdf(output_path: Path):
     _section(story, '1. Core Objective', S)
 
     story.append(Paragraph(
-        'This project develops a <b>prescriptive analytics system</b> that estimates '
-        'individual player <b>Readiness to Train</b> in professional football. Using '
-        '<b>Causal Machine Learning</b> within a <b>Dynamic Treatment Regime (DTR)</b> '
-        'framework, the system recommends an optimal daily training intensity for each '
-        'player &#8212; delivered as a continuous score between 0 and 1. A score of 0 '
-        'indicates the player should rest entirely; a score of 1 indicates the player '
-        'can train at maximal intensity.',
+        'The goal of this project is to <b>optimise the performance of players on '
+        'match day</b> by developing a prescriptive analytics system that estimates '
+        'individual player <b>Readiness to Train</b>. Using <b>Causal Machine '
+        'Learning</b> within a <b>Dynamic Treatment Regime (DTR)</b> framework, the '
+        'system will recommend an optimal daily training intensity for each player '
+        '&#8212; delivered as a continuous score between 0 and 1. A score of 0 '
+        'indicates the player should rest; a score of 1 indicates the player can '
+        'train at maximal intensity.',
         S['body']))
 
     story.append(Paragraph(
-        'The system is fully <b>individualised</b>: each player receives a '
+        'The system will be fully <b>individualised</b>: each player will receive a '
         'personalised score derived from their own physiological profile, training '
-        'history, and evolving daily state. The problem is inherently a '
-        '<b>Dynamic Treatment Regime with variable-length decision horizons</b> '
-        'because (1) not every player is selected for every match &#8212; so some '
-        'players skip a cycle entirely while others play &#8212; and (2) the time '
-        'between consecutive matches varies (typically 5&#8211;8 days, but '
-        'sometimes more during international breaks or cup fixtures). Each player\'s '
-        'match-cycle length therefore differs both across players and across time.',
+        'history, and evolving daily state. The ultimate objective is to find the '
+        'training intensity sequence across the pre-match cycle that maximises each '
+        'player\'s physical output on match day.',
         S['body']))
-
-    _callout(story,
-             'The objective is NOT injury minimisation. A policy that minimises '
-             'injury risk trivially prescribes zero load. The true objective is '
-             'performance optimisation under biological constraints &#8212; where some '
-             'non-zero injury incidence may be optimal because competitive '
-             'performance requires physiological stress.',
-             S)
 
     # ── 2. Partnership & Data ─────────────────────────────────────────────────
     _section(story, '2. Partnership & Data', S)
@@ -260,29 +250,66 @@ def build_pdf(output_path: Path):
         S['body']))
 
     _table(story,
-           ['Dataset', 'Rows', 'Columns', 'Players', 'Date Range', 'Granularity'],
+           ['Dataset', 'Rows', 'Cols', 'Players', 'Start', 'End', 'Days'],
            [
-               ['Readiness_Data.xlsx', '14,359', '24', '28',
-                '2024-07-01 \u2192 2026-02-17\n(597 days)', 'Daily (player-day)'],
-               ['Raw_Data.xlsx', '9,968', '39', '84',
-                '2024-05-02 \u2192 2026-03-01', 'Session-level (player-session)'],
-               ['Sessions.xlsx', '1,206', '9', '\u2014',
-                '2024-05-02 \u2192 2026-03-01', 'Session-level (team-session)'],
-               ['Games.xlsx', '403', '9', '24',
-                '2025-07-27 \u2192 2026-02-28\n(27 match dates)', 'Match-level (player-match)'],
+               ['Readiness_Data', '14,359', '24', '28',
+                '2024-07-01', '2026-02-17', '597'],
+               ['Raw_Data', '9,968', '39', '84',
+                '2024-05-02', '2026-03-01', '670'],
+               ['Sessions', '1,206', '9', '&#8212;',
+                '2024-05-02', '2026-03-01', '670'],
+               ['Games', '403', '9', '24',
+                '2025-07-27', '2026-02-28', '216'],
            ], S,
-           col_widths=[3.2*cm, 1.3*cm, 1.9*cm, 1.8*cm, 3.8*cm, 4.2*cm])
+           col_widths=[4.0*cm, 1.8*cm, 1.5*cm, 2.0*cm, 3.0*cm, 3.0*cm, 1.7*cm])
 
     story.append(Paragraph(
-        'The <b>processed dataset</b> merges all four sources. Readiness_Data is the '
-        'base; Raw_Data provides detailed GPS/HR at session level (shifted +1 day so '
-        'it appears as "yesterday" data); Games provides match performance data '
-        '(also shifted +1 day). Player overlap: all 28 Readiness_Data players appear '
-        'in Raw_Data; 23 of 28 appear in Games.',
+        'The <b>processed dataset</b> (RTT.xlsx) merges all four sources into a '
+        'single analysis-ready file with 46 engineered features per player-day. '
+        'Readiness_Data is the base; Raw_Data provides detailed GPS/HR at session '
+        'level (shifted +1 day so it appears as "yesterday" data); Games provides '
+        'match performance data (also shifted +1 day). Player overlap: all 28 '
+        'Readiness_Data players appear in Raw_Data; 23 of 28 appear in Games.',
         S['body']))
 
-    # ── 3. Why This Is a Causal Problem ──────────────────────────────────────
-    _section(story, '3. Why This Is a Causal Problem', S)
+    story.append(Paragraph(
+        '<b>Data dictionaries:</b> Two auto-generated PDF documents describe '
+        'every variable in detail. The <b>Raw Data Dictionary</b> '
+        '(<i>data/raw/Raw Data Dictionary.pdf</i>) documents all columns across '
+        'the four raw datasets. The <b>RTT Data Dictionary</b> '
+        '(<i>data/processed/RTT Data Dictionary.pdf</i>) documents all 46 columns '
+        'in the processed dataset, including engineered features and their temporal '
+        'positions.',
+        S['body']))
+
+    story.append(Paragraph(
+        '<b>Temporal ordering within each row:</b> Variables in a single row have '
+        'different temporal positions. "Yesterday" columns contain data from day '
+        't&#8722;1 (fully known). Morning wellness z-scores are measured at the '
+        'start of day t (before any activity decisions). Post-assessment variables '
+        '(Activity Type Today, Selected) are determined after the morning assessment '
+        'and represent the treatment decision &#8212; they must never be used as '
+        'predictors in standard ML.',
+        S['body']))
+
+    # ── 3. Sports Science Foundation ──────────────────────────────────────────
+    _section(story, '3. Sports Science Foundation', S)
+
+    story.append(Paragraph(
+        'Training stress produces fatigue, which during recovery is followed by '
+        'adaptation (supercompensation). The ACWR (Acute:Chronic Workload Ratio) '
+        'captures where a player sits on this curve: the sweet spot is '
+        '0.8&#8211;1.3; values above 1.5 are flagged as danger zones (Gabbett, '
+        '2016). GPS metrics are individualised as percentages of each player\'s '
+        'match benchmarks. The training intensity score A(t) is the '
+        'tanh-compressed harmonic mean of these GPS percentages, soft-capped '
+        'in [0,&nbsp;1). The typical weekly structure (5&#8211;6 training days '
+        'followed by a match) creates player-specific match cycles central to '
+        'the DTR formulation.',
+        S['body']))
+
+    # ── 4. Why This Is a Causal Problem ──────────────────────────────────────
+    _section(story, '4. Why This Is a Causal Problem', S)
 
     story.append(Paragraph(
         'Standard predictive modelling asks <i>"given the data, what will '
@@ -317,158 +344,93 @@ def build_pdf(output_path: Path):
 
     story.append(Spacer(1, 4))
 
-    # ── 4. Causal Framework Variables ─────────────────────────────────────────
-    _section(story, '4. Causal Framework Variables', S)
+    # ── 5. Causal Framework ─────────────────────────────────────────────────
+    _section(story, '5. Causal Framework', S)
 
     _table(story,
-           ['Symbol', 'Role', 'Variables'],
+           ['Symbol', 'Role', 'Description'],
            [
-               ['L(t)  (Covariates)',
-                'Player state at time t',
-                'Wellness z-scores (fatigue, readiness, soreness, sleep, stress, '
-                'mood), composite scores (Physical State, Mental State, Overall '
-                'Wellbeing), ACWR metrics, Days Since Game, Days Until Match, '
-                'medical availability, club attendance, raw GPS/HR (yesterday), '
-                'match performance (yesterday &#8212; only filled day after match)'],
-               ['A(t)  (Treatment)',
-                'Daily training intensity',
-                'Continuous score in [0,1], derived as tanh(mean of Total Distance %, '
-                'High-Speed Distance %, Decelerations %, Sprints %) normalised '
-                'against individual match benchmarks. GPS % columns are capped at '
-                '250% to remove extreme outliers. Free/rest days \u2192 0.'],
-               ['Y  (Outcome)',
-                'Match-day performance',
-                'High-intensity distance per Ball-In-Play minute (m/BIP). '
-                'Continuous, to be maximised. Only filled in Games dataset on '
-                'match-day rows (shifted +1 day in processed data).'],
+               ['L(t)', 'Covariates',
+                'Player state at time t: wellness, ACWR, GPS load, schedule position'],
+               ['A(t)', 'Treatment',
+                'Training intensity [0,1]: tanh(harmonic mean of GPS benchmark %)'],
+               ['Y', 'Outcome',
+                'Match-day performance: high-intensity metrics per ball-in-play minute'],
            ], S,
-           col_widths=[2.8*cm, 3.2*cm, 10.2*cm])
-
-    # ── 5. Temporal Semantics ─────────────────────────────────────────────────
-    _section(story, '5. Temporal Semantics (Critical)', S)
+           col_widths=[1.8*cm, 2.5*cm, 11.9*cm])
 
     story.append(Paragraph(
-        'Each row in the dataset represents <b>one player-day</b> (date t). '
-        'Variables within a single row have different temporal positions. '
-        'Understanding this is essential for avoiding data leakage and correctly '
-        'specifying causal models.',
+        'The problem is modelled as a <b>longitudinal causal DAG</b> (Directed '
+        'Acyclic Graph) with the following structure within each match cycle:',
         S['body']))
 
-    _table(story,
-           ['Temporal position', 'Variables', 'Available at prediction?'],
-           [
-               ['Before day t\n(t\u22121 data)',
-                'Activity Type Yesterday, GPS % (\u00d75), Training Intensity '
-                'Yesterday, ACWR (\u00d74), RPE Yesterday, Comment Yesterday, '
-                'Total Minutes / Distance / HS Distance / HR / HR Exertion '
-                'Yesterday (from Raw_Data), Match High Intensity / HIT Efforts / '
-                'Minutes Played Yesterday (from Games, day after match only)',
-                'Yes \u2014 fully known'],
-               ['Morning of day t\n(assessment)',
-                'Wellness z-scores (fatigue, readiness, soreness, sleep quality, '
-                'stress, mood), Physical State, Mental State, Overall Wellbeing, '
-                'Status, Status Decrease, Days Since Game, Days Until Match, '
-                'Match Day, Medical Availability, Club Attendance, Position',
-                'Yes \u2014 measured before activity decisions'],
-               ['Post-assessment\n(same day t)',
-                'Activity Type Today, Selected',
-                'No \u2014 assigned AFTER morning assessment. Only valid as treatment '
-                'A(t) in causal analyses, never as a predictor in standard ML.'],
-           ], S,
-           col_widths=[3.2*cm, 8.8*cm, 4.2*cm])
-
-    story.append(Paragraph('<b>Critical rules:</b>', S['body']))
-
     story.append(Paragraph(
-        '<b>Days Since Game is NEVER 0.</b> It counts days since the last '
-        'completed OHL first-team game. On match day the game has not yet '
-        'occurred at the morning assessment, so the count refers to the '
-        'previous match. Minimum value: 1.',
+        '&#8226; At each time step t, the player\'s <b>covariates L(t)</b> '
+        '(morning wellness, fatigue, ACWR) causally affect the coaching '
+        'staff\'s <b>treatment decision A(t)</b> (what training intensity is '
+        'prescribed that afternoon).',
         S['bullet']))
 
     story.append(Paragraph(
-        '<b>Days Until Match CAN be 0</b> &#8212; on match day itself for '
-        'selected players. Only OHL first-team matches are counted.',
+        '&#8226; The treatment A(t) then causally affects the player\'s '
+        '<b>state L(t+1)</b> the next morning (training changes fatigue, '
+        'soreness, adaptation level).',
         S['bullet']))
 
     story.append(Paragraph(
-        '<b>Match Day is schedule information</b> &#8212; although derived from '
-        'Activity Type Today in preprocessing, it represents the team fixture '
-        'list (known in advance) and is safe to use as a predictor.',
+        '&#8226; This creates a <b>feedback loop</b>: L(t) &#8594; A(t) '
+        '&#8594; L(t+1) &#8594; A(t+1) &#8594; ... repeating across the '
+        'match cycle until match day, when the final player state and '
+        'cumulative training determine the <b>match outcome Y</b>.',
         S['bullet']))
 
     story.append(Paragraph(
-        '<b>Wellness z-scores are individualised</b> &#8212; each player\'s '
-        'z-scores are relative to their own 28-day rolling baseline, not the '
-        'team average.',
+        '&#8226; Between cycles, the match outcome Y feeds back into the '
+        'first state of the next cycle (match fatigue carries over).',
         S['bullet']))
 
     story.append(Paragraph(
-        '<b>Lag features are player-grouped</b> &#8212; shifted values '
-        '(e.g. Fatigue (z) at t&#8722;1) are created within each player\'s own '
-        'time series to prevent cross-player data leakage.',
-        S['bullet']))
-
-    # ── 6. Sports Science Foundation ──────────────────────────────────────────
-    _section(story, '6. Sports Science Foundation', S)
-
-    story.append(Paragraph('<b>Supercompensation</b>', S['h2']))
-    story.append(Paragraph(
-        'Training stress produces fatigue, which, during recovery, is '
-        'followed by adaptation and an increase in performance capacity above '
-        'baseline. This cycle &#8212; stress &#8594; fatigue &#8594; recovery '
-        '&#8594; supercompensation &#8212; underpins all periodisation theory. '
-        'The DTR framework seeks the sequence of training intensities that '
-        'maximises supercompensation at match day, neither under-loading '
-        '(insufficient stimulus) nor over-loading (accumulated fatigue with '
-        'insufficient recovery).',
+        'The figure below shows an example DAG for Player 1, match cycle 4 '
+        '(schematic view with grouped covariates):',
         S['body']))
 
-    story.append(Paragraph('<b>Acute:Chronic Workload Ratio (ACWR)</b>', S['h2']))
+    # Insert DAG image -- preserve original aspect ratio
+    dag_img = project_root / 'images' / 'DAGs' / 'player 1' / 'player_1_cycle_4_schematic.png'
+    if dag_img.exists():
+        # Read actual image dimensions to preserve aspect ratio
+        try:
+            from PIL import Image as PILImage
+            pil_img = PILImage.open(str(dag_img))
+            img_w, img_h = pil_img.size
+            aspect = img_w / img_h
+            display_w = CONTENT_W
+            display_h = display_w / aspect
+        except Exception:
+            display_w = CONTENT_W
+            display_h = CONTENT_W * 0.6
+        story.append(Spacer(1, 4))
+        story.append(Image(str(dag_img), width=display_w, height=display_h))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            '<i>Figure: Causal DAG for Player 1, match cycle 4 (schematic). '
+            'Blue ellipses = player state L(t), amber rectangles = treatment A(t), '
+            'crimson diamond = match outcome Y.</i>', S['meta']))
+    else:
+        story.append(Paragraph(
+            '<i>[DAG image not found &#8212; run src/utils/generate_visualizations.py]</i>',
+            S['meta']))
+
     story.append(Paragraph(
-        'ACWR is the ratio of a player\'s recent acute load (7-day exponential '
-        'moving average) to their chronic load (42-day EMA). It captures where '
-        'a player sits on the stress-recovery-adaptation curve. The dataset '
-        'provides ACWR for four GPS metrics: Total Distance, High-Speed '
-        'Distance, Decelerations (&gt;3 m/s&#178;), and Sprints.',
+        'This DAG structure is generated automatically for each player and '
+        'each match cycle using the DAGCreator class (499 DAGs total, stored '
+        'in <i>images/DAGs/player X/</i>). It encodes the causal assumptions '
+        'needed for G-methods: confounding edges (L &#8594; A), treatment '
+        'effects (A &#8594; L at t+1), state carryover (L &#8594; L at t+1), '
+        'and inter-cycle feedback (Y &#8594; L at cycle k+1).',
         S['body']))
 
-    _table(story,
-           ['ACWR Zone', 'Interpretation'],
-           [
-               ['&lt; 0.8', 'Under-trained &#8212; insufficient stimulus for adaptation'],
-               ['0.8 &#8211; 1.3', 'Sweet spot &#8212; optimal fitness-fatigue balance'],
-               ['1.3 &#8211; 1.5', 'Caution &#8212; elevated fatigue accumulation'],
-               ['&gt; 1.5', 'Danger zone &#8212; flagged as Any ACWR Danger = 1; '
-                'injury risk sharply elevated (Gabbett, 2016)'],
-           ], S,
-           col_widths=[3.0*cm, 13.2*cm])
-
-    story.append(Paragraph('<b>Individual Profiling</b>', S['h2']))
-    story.append(Paragraph(
-        'GPS metrics are expressed as a percentage of each player\'s own '
-        'match-day benchmarks (e.g. Total Distance % = session distance / '
-        'player\'s average match distance). This normalises for positional '
-        'differences and individual fitness levels, making comparisons across '
-        'players meaningful. Values are capped at 250% to remove extreme '
-        'outliers from low-benchmark or early-season matches. Wellness z-scores '
-        'use a 28-day rolling window per player. The training intensity score '
-        'A(t) is the tanh-compressed mean of these GPS percentages, '
-        'soft-capped in [0,&nbsp;1).',
-        S['body']))
-
-    story.append(Paragraph('<b>Match Cycle Structure</b>', S['h2']))
-    story.append(Paragraph(
-        'The typical weekly structure consists of 5&#8211;6 training days '
-        'followed by a match day. This creates the <b>match cycle</b> structure '
-        'central to the DTR formulation. Each cycle begins the day after a match '
-        'and ends on the next match day. Cycle boundaries are '
-        '<b>player-specific</b>: days where the team plays but a given player '
-        'is not selected simply extend that player\'s current cycle.',
-        S['body']))
-
-    # ── 7. Key Challenges ─────────────────────────────────────────────────────
-    _section(story, '7. Key Challenges', S)
+    # ── 6. Key Challenges ─────────────────────────────────────────────────────
+    _section(story, '6. Key Challenges', S)
 
     story.append(Paragraph('<b>Small N, Large T</b>', S['h2']))
     story.append(Paragraph(
@@ -509,31 +471,7 @@ def build_pdf(output_path: Path):
         '18.75 m/min.',
         S['body']))
 
-    # ── 8. Research Questions ─────────────────────────────────────────────────
-    _section(story, '8. Key Research Questions', S)
-
-    story.append(Paragraph(
-        '<b>RQ1.</b> How can we accurately estimate the effect of training '
-        'intensity sequences in a "Small N, Large T" observational environment '
-        '(28 players, up to 597 days) where standard statistical assumptions '
-        'are violated by time-varying confounding?',
-        S['bullet']))
-
-    story.append(Paragraph(
-        '<b>RQ2.</b> How do we handle <b>time-varying confounding affected by '
-        'prior treatment</b> in observational football data, where coaching '
-        'decisions create systematic confounding between player state and '
-        'prescribed load?',
-        S['bullet']))
-
-    story.append(Paragraph(
-        '<b>RQ3.</b> Can a causal DTR model identify the optimal '
-        'individualised training intensity sequence &#8212; one per day in the '
-        'pre-match cycle &#8212; that maximises expected match-day performance '
-        'for each player?',
-        S['bullet']))
-
-    # Sections 9-11 removed — experiments and methods are in Project Results.pdf and README.md.
+    # Modelling approach removed -- covered in Project Results.pdf
 
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 0.5 * cm))

@@ -465,6 +465,9 @@ def run_experiment(
         'best_params':   raw.get('best_params', {}),
         'task_type':     raw.get('task_type', 'classification'),
         'threshold':     threshold,
+        'trained_model': raw.get('trained_model'),
+        'X_train':       model.data.get('X_train'),
+        'X_test':        model.data.get('X_test'),
     }
 
     if 'y_val_true' in raw:
