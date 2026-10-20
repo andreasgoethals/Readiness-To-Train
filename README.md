@@ -172,3 +172,6 @@ python src/utils/generate_visualizations.py
 ---
 
 *KU Leuven & OH Leuven*
+
+Shared HPC guidance is available in the read-only [VSC Library](vsc-library/README.md);
+project-specific cluster instructions belong in [docs/VSC.md](docs/VSC.md).
